@@ -1,0 +1,320 @@
+const $ = id => document.getElementById(id);
+const docs = [];
+let activeDoc = 0;
+let selected = 0;
+let saveQueue = Promise.resolve();
+
+function openStore() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('dialogue-atlas', 1);
+    request.onupgradeneeded = () => request.result.createObjectStore('state');
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function writeState() {
+  const db = await openStore();
+  try {
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction('state', 'readwrite');
+      transaction.objectStore('state').put({docs, activeDoc}, 'current');
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+function persist() {
+  saveQueue = saveQueue.catch(() => {}).then(writeState);
+  return saveQueue;
+}
+
+async function restore() {
+  const db = await openStore();
+  try {
+    return await new Promise((resolve, reject) => {
+      const request = db.transaction('state').objectStore('state').get('current');
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+function savePosition() {
+  persist().catch(() => { $('parseStatus').textContent = '浏览器未能保存阅读位置'; });
+}
+
+function textOf(blocks) {
+  return blocks.filter(b => b.type === 'text').map(b => b.value).join(' ');
+}
+
+function escapeHTML(value) {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+}
+
+function renderMarkdown(source) {
+  const math = [];
+  const protectedSource = source.split(/(```[\s\S]*?```)/g).map((part, index) => {
+    if (index % 2) return part;
+    return part.replace(/\\\[([\s\S]*?)\\\]|\$\$([\s\S]*?)\$\$|\\\(([\s\S]*?)\\\)|(?<!\\)\$([^\s$](?:[^$\n]*?[^\s$])?)\$/g, (_, bracket, dollars, inline, dollarInline) => {
+      const token = `MATHTOKEN${math.length}END`;
+      math.push({token, tex: bracket ?? dollars ?? inline ?? dollarInline, display: bracket !== undefined || dollars !== undefined});
+      return token;
+    });
+  }).join('');
+  const parsed = new DOMParser().parseFromString(`<div>${marked.parse(protectedSource, {gfm: true, breaks: true})}</div>`, 'text/html');
+  const root = parsed.body.firstElementChild;
+  const allowed = new Set(['P', 'BR', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'UL', 'OL', 'LI', 'BLOCKQUOTE', 'PRE', 'CODE', 'STRONG', 'EM', 'DEL', 'HR', 'TABLE', 'THEAD', 'TBODY', 'TR', 'TH', 'TD', 'A', 'IMG']);
+  for (const element of [...root.querySelectorAll('*')]) {
+    if (!allowed.has(element.tagName)) {
+      element.replaceWith(parsed.createTextNode(element.textContent || ''));
+      continue;
+    }
+    const href = element.getAttribute('href');
+    const src = element.getAttribute('src');
+    const alt = element.getAttribute('alt');
+    for (const attribute of [...element.attributes]) element.removeAttribute(attribute.name);
+    if (element.tagName === 'A' && /^https?:\/\//i.test(href || '')) {
+      element.setAttribute('href', href);
+      element.setAttribute('target', '_blank');
+      element.setAttribute('rel', 'noopener noreferrer');
+    }
+    if (element.tagName === 'IMG' && /^(https?:\/\/|data:image\/(png|jpeg|webp|gif);base64,)/i.test(src || '')) {
+      element.setAttribute('src', src);
+      element.setAttribute('alt', alt || '图片');
+    }
+  }
+  let html = root.innerHTML;
+  for (const item of math) {
+    html = html.replaceAll(item.token, katex.renderToString(item.tex.trim(), {
+      displayMode: item.display, throwOnError: false, trust: false
+    }));
+  }
+  return html;
+}
+
+function renderBlocks(blocks, label, markdown = false) {
+  return blocks.map(block => block.type === 'image'
+    ? `<div class="image-wrap"><img src="${block.value}" alt="${label}中的图片" tabindex="0"></div><div class="image-caption">${markdown ? 'DeepSeek 分享图片' : 'Word 文档内嵌图片'} · 点击查看大图</div>`
+    : markdown ? `<div class="markdown">${renderMarkdown(block.value)}</div>`
+      : `<p>${escapeHTML(block.value).replaceAll('\n', '<br>')}</p>`).join('') || '<p class="empty">没有文字或图片</p>';
+}
+
+function renderList() {
+  const doc = docs[activeDoc];
+  if (!doc) return;
+  const query = $('search').value.trim().toLowerCase();
+  const matches = doc.turns.map((turn, index) => ({turn, index}))
+    .filter(({turn}) => (textOf(turn.question) + ' ' + textOf(turn.answer)).toLowerCase().includes(query));
+  $('count').textContent = query ? `找到 ${matches.length} 轮` : `共 ${doc.turns.length} 轮`;
+  $('turns').innerHTML = matches.length ? matches.map(({turn, index}) => {
+    const summary = textOf(turn.question).slice(0, 27) || '图片提问';
+    const hasImage = turn.question.some(b => b.type === 'image') || turn.answer.some(b => b.type === 'image');
+    return `<button class="turn ${selected === index ? 'active' : ''}" data-index="${index}"><span class="num">${String(index + 1).padStart(2, '0')}</span><b>${escapeHTML(summary)}${hasImage ? '<span class="pill">图片</span>' : ''}</b><small>${turn.warnings.length ? escapeHTML(turn.warnings.join('、')) : '完整问答'}</small></button>`;
+  }).join('') : '<div class="empty">没有找到匹配的轮次</div>';
+  document.querySelectorAll('.turn').forEach(button => button.addEventListener('click', () => {
+    selected = Number(button.dataset.index);
+    doc.selected = selected;
+    render();
+    savePosition();
+  }));
+}
+
+function render() {
+  const doc = docs[activeDoc];
+  if (!doc) { renderEmpty(); return; }
+  document.querySelector('.thread').hidden = false;
+  document.querySelector('.footer-nav').hidden = false;
+  const turn = doc.turns[selected];
+  $('heading').textContent = '问答详情';
+  $('counter').textContent = `${String(selected + 1).padStart(2, '0')} / ${String(doc.turns.length).padStart(2, '0')}`;
+  $('crumb').textContent = `第 ${selected + 1} 轮`;
+  $('docName').textContent = doc.title;
+  $('docMeta').textContent = `${doc.type === 'link' ? 'DeepSeek 链接' : 'Word 文档'} · ${doc.turns.length} 轮问答`;
+  $('docCrumb').textContent = doc.title;
+  $('description').textContent = turn.warnings.length ? turn.warnings.join('；') : '按原始文档顺序展示，图片保留在所属消息中。';
+  $('question').innerHTML = renderBlocks(turn.question, '提问', doc.type === 'link');
+  $('answer').innerHTML = renderBlocks(turn.answer, '回答', doc.type === 'link');
+  $('qmeta').textContent = turn.question.some(b => b.type === 'image') ? '图文内容' : '文字内容';
+  $('ameta').textContent = turn.answer.some(b => b.type === 'image') ? '图文内容' : '文字内容';
+  $('prev').disabled = selected === 0;
+  $('next').disabled = selected === doc.turns.length - 1;
+  $('parseStatus').textContent = '已完成解析';
+  document.querySelectorAll('#question img, #answer img').forEach(img => {
+    img.tabIndex = 0;
+    img.addEventListener('click', () => openImage(img));
+    img.addEventListener('keydown', e => { if (e.key === 'Enter') openImage(img); });
+  });
+  renderList();
+}
+
+function openImage(img) {
+  $('previewImage').src = img.currentSrc || img.src;
+  $('previewImage').alt = img.alt || '放大的对话图片';
+  $('imageDialog').showModal();
+  $('closeImage').focus();
+}
+
+function renderEmpty() {
+  $('docName').textContent = '暂无文档';
+  $('docMeta').textContent = '导入 Word 文档开始';
+  $('docCrumb').textContent = '暂无文档';
+  $('crumb').textContent = '';
+  $('heading').textContent = '从导入文档开始';
+  $('counter').textContent = '0 / 0';
+  $('description').textContent = '点击左侧“导入新文档”，添加对话记录。';
+  $('count').textContent = '共 0 轮';
+  $('turns').innerHTML = '';
+  $('parseStatus').textContent = '暂无对话记录';
+  document.querySelector('.thread').hidden = true;
+  document.querySelector('.footer-nav').hidden = true;
+}
+
+function confirmDocumentDelete(doc) {
+  const dialog = $('deleteDialog');
+  $('deleteFilename').textContent = doc.filename || doc.title;
+  dialog.returnValue = '';
+  dialog.showModal();
+  $('cancelDelete').focus();
+  return new Promise(resolve => dialog.addEventListener('close', () => resolve(dialog.returnValue === 'delete'), {once: true}));
+}
+
+async function importFiles(files) {
+  for (const file of files) {
+    if (!file.name.toLowerCase().endsWith('.docx')) {
+      alert(`暂只支持 .docx 文件：${file.name}`);
+      continue;
+    }
+    $('parseStatus').textContent = `正在解析 ${file.name}…`;
+    try {
+      const response = await fetch('/api/parse', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'X-Filename': encodeURIComponent(file.name)},
+        body: file
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || '解析失败');
+      await addDocument(result);
+    } catch (error) {
+      $('parseStatus').textContent = `导入失败：${error.message}`;
+      alert(`${file.name}：${error.message}`);
+    }
+  }
+  $('fileInput').value = '';
+}
+
+async function addDocument(result) {
+  result.selected = 0;
+  docs.push(result);
+  activeDoc = docs.length - 1;
+  selected = 0;
+  $('search').value = '';
+  updateWorkspace();
+  render();
+  try { await persist(); }
+  catch (_) { $('parseStatus').textContent = '导入成功，但浏览器未能保存；刷新后可能丢失'; }
+}
+
+async function importLink(url) {
+  $('parseStatus').textContent = '正在读取分享链接…';
+  try {
+    const response = await fetch('/api/parse-link', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url})
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || '链接导入失败');
+    await addDocument(result);
+    $('linkInput').value = '';
+  } catch (error) {
+    $('parseStatus').textContent = `链接导入失败：${error.message}`;
+    alert(error.message);
+  }
+}
+
+function updateWorkspace() {
+  let container = $('workspaceDocs');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'workspaceDocs';
+    container.className = 'workspace-docs';
+    const rail = document.querySelector('.rail');
+    const workspace = rail.querySelector('.workspace') || rail;
+    workspace.append(container);
+  }
+  container.innerHTML = docs.map((doc, index) =>
+    `<div class="workspace-entry"><button class="workspace-doc ${index === activeDoc ? 'active' : ''}" type="button" data-index="${index}" ${index === activeDoc ? 'aria-current="true"' : ''} title="${escapeHTML(doc.filename || doc.title)}"><span class="workspace-doc-icon">DOC</span><span class="workspace-doc-text"><b>${escapeHTML(doc.filename || doc.title)}</b><small>${doc.turns.length} 轮问答 · ${doc.imageCount} 张图片</small></span></button><button class="workspace-delete" type="button" data-index="${index}" aria-label="删除 ${escapeHTML(doc.filename || doc.title)}" title="删除这份文档">×</button></div>`
+  ).join('');
+  document.querySelectorAll('.workspace-doc').forEach(button => button.addEventListener('click', () => {
+    activeDoc = Number(button.dataset.index);
+    selected = docs[activeDoc].selected || 0;
+    $('search').value = '';
+    updateWorkspace();
+    render();
+    savePosition();
+  }));
+  document.querySelectorAll('.workspace-delete').forEach(button => button.addEventListener('click', async () => {
+    const index = Number(button.dataset.index);
+    if (!await confirmDocumentDelete(docs[index])) return;
+    docs.splice(index, 1);
+    if (index < activeDoc) activeDoc--;
+    else if (index === activeDoc) activeDoc = Math.min(index, docs.length - 1);
+    selected = docs[activeDoc]?.selected || 0;
+    $('search').value = '';
+    updateWorkspace();
+    render();
+    try { await persist(); }
+    catch (_) { $('parseStatus').textContent = '删除未能保存，刷新后记录可能重新出现'; }
+  }));
+}
+
+$('importButton').addEventListener('click', () => $('fileInput').click());
+$('linkForm').addEventListener('submit', e => { e.preventDefault(); importLink($('linkInput').value.trim()); });
+$('cancelDelete').addEventListener('click', () => $('deleteDialog').close('cancel'));
+$('confirmDelete').addEventListener('click', () => $('deleteDialog').close('delete'));
+$('deleteDialog').addEventListener('click', e => { if (e.target === $('deleteDialog')) $('deleteDialog').close('cancel'); });
+$('closeImage').addEventListener('click', () => $('imageDialog').close());
+$('imageDialog').addEventListener('click', e => { if (e.target === $('imageDialog')) $('imageDialog').close(); });
+$('imageDialog').addEventListener('close', () => $('previewImage').removeAttribute('src'));
+$('fileInput').addEventListener('change', e => importFiles(e.target.files));
+$('search').addEventListener('input', renderList);
+$('prev').addEventListener('click', () => { if (selected > 0) { docs[activeDoc].selected = --selected; render(); savePosition(); } });
+$('next').addEventListener('click', () => { if (selected < docs[activeDoc].turns.length - 1) { docs[activeDoc].selected = ++selected; render(); savePosition(); } });
+document.addEventListener('keydown', e => {
+  if (!docs.length || ['INPUT', 'SELECT'].includes(document.activeElement.tagName)) return;
+  if (e.key === 'ArrowUp' && selected > 0) { docs[activeDoc].selected = --selected; render(); savePosition(); }
+  if (e.key === 'ArrowDown' && selected < docs[activeDoc].turns.length - 1) { docs[activeDoc].selected = ++selected; render(); savePosition(); }
+});
+
+async function initialize() {
+  try {
+    const state = await restore();
+    if (state && Array.isArray(state.docs) && !docs.length) {
+      docs.push(...state.docs);
+      activeDoc = docs.length ? Math.min(state.activeDoc || 0, docs.length - 1) : 0;
+      selected = docs[activeDoc]?.selected || 0;
+      updateWorkspace();
+      render();
+      return;
+    }
+  } catch (_) {
+    $('parseStatus').textContent = '浏览器本地存储不可用';
+  }
+  try {
+    const response = await fetch('/api/sample');
+    if (!response.ok) { updateWorkspace(); render(); return; }
+    const result = await response.json();
+    if (!docs.length) {
+      result.selected = 3;
+      docs.push(result);
+      selected = 3;
+      updateWorkspace();
+      render();
+    }
+  } catch (_) { updateWorkspace(); render(); }
+}
+initialize();

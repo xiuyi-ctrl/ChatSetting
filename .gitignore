@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.render_template/
+assets/image1.png
+assets/image2.png
+sample.docx
