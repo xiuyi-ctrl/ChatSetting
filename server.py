@@ -5,6 +5,7 @@ import json
 import re
 import zipfile
 import requests
+import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -24,13 +25,17 @@ LINK_HEADERS = {
     'Accept': 'application/json',
     'Accept-Language': 'zh-CN,zh;q=0.9',
 }
+PENDING_IMPORTS = []
+PENDING_LOCK = threading.Lock()
 
 
 def parse_share_link(url):
     parsed = urlparse(url.strip())
+    if parsed.scheme == 'https' and parsed.hostname == 'chatgpt.com':
+        return parse_chatgpt_link(url, parsed)
     match = SHARE_PATH.fullmatch(parsed.path.rstrip('/'))
     if parsed.scheme != 'https' or parsed.hostname != 'chat.deepseek.com' or not match:
-        raise ValueError('目前支持 https://chat.deepseek.com/share/… 格式的公开分享链接')
+        raise ValueError('请提供公开的 ChatGPT 或 DeepSeek 分享链接')
     share_id = match.group(1)
     try:
         response = requests.get(
@@ -82,8 +87,77 @@ def parse_share_link(url):
             turn['warnings'].append('缺少回答')
             warnings.append(f'第 {index} 轮：缺少回答')
     return {'title': shared.get('title') or 'DeepSeek 对话', 'filename': f'DeepSeek · {share_id}',
-            'type': 'link', 'sourceUrl': url, 'turns': turns, 'warnings': warnings,
+            'type': 'link', 'platform': 'DeepSeek', 'sourceUrl': url, 'turns': turns, 'warnings': warnings,
             'imageCount': sum(1 for turn in turns for side in ('question', 'answer') for block in turn[side] if block['type'] == 'image')}
+
+
+def parse_chatgpt_link(url, parsed=None):
+    parsed = parsed or urlparse(url.strip())
+    match = re.fullmatch(r'/share/([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})', parsed.path.rstrip('/'))
+    if parsed.scheme != 'https' or parsed.hostname != 'chatgpt.com' or not match:
+        raise ValueError('请提供 https://chatgpt.com/share/… 格式的公开分享链接')
+    share_id = match.group(1)
+    return parse_chatgpt_payload(url, read_chatgpt_share(share_id))
+
+
+def read_chatgpt_share(share_id):
+    try:
+        response = requests.get(f'https://chatgpt.com/backend-api/share/{share_id}', headers=LINK_HEADERS, timeout=15)
+        response.raise_for_status()
+        return response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise ValueError('ChatGPT 分享内容读取失败；请确认链接公开有效，或稍后重试') from exc
+
+
+def parse_chatgpt_payload(url, shared, images=None):
+    match = re.fullmatch(r'https://chatgpt\.com/share/([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})/?', url) if isinstance(url, str) else None
+    if not match or not isinstance(shared, dict):
+        raise ValueError('分享数据格式不正确')
+    share_id = match.group(1)
+    images = images or {}
+    if not isinstance(images, dict):
+        raise ValueError('图片数据格式不正确')
+    turns, warnings = [], []
+    for node in shared.get('linear_conversation') or []:
+        message = node.get('message') or {}
+        role = (message.get('author') or {}).get('role')
+        if role not in ('user', 'assistant'):
+            continue
+        content = message.get('content') or {}
+        if content.get('content_type') not in ('text', 'multimodal_text'):
+            continue
+        blocks = []
+        for part in content.get('parts') or []:
+            if isinstance(part, str) and part.strip():
+                blocks.append({'type': 'text', 'value': part})
+            elif isinstance(part, dict):
+                text = part.get('text')
+                if isinstance(text, str) and text.strip():
+                    blocks.append({'type': 'text', 'value': text})
+                elif part.get('content_type') == 'image_asset_pointer':
+                    pointer = part.get('asset_pointer', '')
+                    file_id = pointer.split('://', 1)[-1].split('?', 1)[0]
+                    image = images.get(file_id)
+                    if isinstance(image, str) and re.fullmatch(r'data:image/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+', image):
+                        blocks.append({'type': 'image', 'value': image})
+                    else:
+                        blocks.append({'type': 'missing-image', 'value': url})
+        if role == 'user':
+            turns.append({'question': blocks, 'answer': [], 'warnings': [], 'line': len(turns) + 1})
+        elif turns:
+            turns[-1]['answer'].extend(blocks)
+    if not turns:
+        raise ValueError('链接已读取，但没有识别到用户提问；该分享可能仅包含单条回答')
+    for index, turn in enumerate(turns, 1):
+        if any(block['type'] == 'missing-image' for side in ('question', 'answer') for block in turn[side]):
+            turn['warnings'].append('图片需在原分享页查看')
+            warnings.append(f'第 {index} 轮：图片需在原分享页查看')
+        if not turn['answer']:
+            turn['warnings'].append('缺少回答')
+            warnings.append(f'第 {index} 轮：缺少回答')
+    return {'title': shared.get('title') or 'ChatGPT 对话', 'filename': f'ChatGPT · {share_id}',
+            'type': 'link', 'platform': 'ChatGPT', 'sourceUrl': url, 'turns': turns,
+            'warnings': warnings, 'imageCount': sum(1 for turn in turns for side in ('question', 'answer') for block in turn[side] if block['type'] == 'image')}
 
 
 def parse_docx(data, filename):
@@ -219,9 +293,31 @@ class Handler(SimpleHTTPRequestHandler):
     def end_headers(self):
         if self.path.split('?', 1)[0] in ('/interface-sample.html', '/app.js'):
             self.send_header('Cache-Control', 'no-store')
+        if self.path in ('/api/extension-import', '/api/extension-share') and self.headers.get('Origin', '').startswith('chrome-extension://'):
+            self.send_header('Access-Control-Allow-Origin', self.headers['Origin'])
         super().end_headers()
 
+    def do_OPTIONS(self):
+        if self.path not in ('/api/extension-import', '/api/extension-share') or not self.headers.get('Origin', '').startswith('chrome-extension://'):
+            self.send_error(403)
+            return
+        self.send_response(204)
+        self.send_header('Access-Control-Allow-Methods', 'POST')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header('Access-Control-Allow-Private-Network', 'true')
+        self.end_headers()
+
     def do_GET(self):
+        if self.path == '/api/pending-import':
+            with PENDING_LOCK:
+                result = PENDING_IMPORTS.pop(0) if PENDING_IMPORTS else None
+            payload = json.dumps(result, ensure_ascii=False).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Content-Length', str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if self.path == '/api/sample':
             sample = ROOT / 'sample.docx'
             if not sample.exists():
@@ -240,16 +336,34 @@ class Handler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self):
-        if self.path not in ('/api/parse', '/api/parse-link'):
+        if self.path not in ('/api/parse', '/api/parse-link', '/api/extension-import', '/api/extension-share'):
             self.send_error(404)
             return
         length = int(self.headers.get('Content-Length', 0))
-        limit = 4_096 if self.path == '/api/parse-link' else 25_000_000
+        limit = 4_096 if self.path in ('/api/parse-link', '/api/extension-share') else 40_000_000
         if not 0 < length <= limit:
             self.send_error(413, 'Input is too large')
             return
         try:
-            if self.path == '/api/parse-link':
+            if self.path == '/api/extension-share':
+                if not self.headers.get('Origin', '').startswith('chrome-extension://') or self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
+                    raise ValueError('只接受浏览器扩展导入')
+                url = json.loads(self.rfile.read(length)).get('url', '')
+                parsed = urlparse(url.strip())
+                match = re.fullmatch(r'/share/([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})', parsed.path.rstrip('/'))
+                if parsed.scheme != 'https' or parsed.hostname != 'chatgpt.com' or not match:
+                    raise ValueError('请提供公开的 ChatGPT 分享链接')
+                result = read_chatgpt_share(match.group(1))
+            elif self.path == '/api/extension-import':
+                if not self.headers.get('Origin', '').startswith('chrome-extension://') or self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
+                    raise ValueError('只接受浏览器扩展导入')
+                data = json.loads(self.rfile.read(length))
+                result = parse_chatgpt_payload(data.get('url', ''), data.get('shared'), data.get('images'))
+                with PENDING_LOCK:
+                    PENDING_IMPORTS.append(result)
+                    del PENDING_IMPORTS[:-3]
+                result = {'ok': True, 'turns': len(result['turns']), 'images': result['imageCount']}
+            elif self.path == '/api/parse-link':
                 result = parse_share_link(json.loads(self.rfile.read(length)).get('url', ''))
             else:
                 filename = unquote(self.headers.get('X-Filename', 'conversation.docx'))

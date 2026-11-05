@@ -100,7 +100,9 @@ function renderMarkdown(source) {
 
 function renderBlocks(blocks, label, markdown = false) {
   return blocks.map(block => block.type === 'image'
-    ? `<div class="image-wrap"><img src="${block.value}" alt="${label}中的图片" tabindex="0"></div><div class="image-caption">${markdown ? 'DeepSeek 分享图片' : 'Word 文档内嵌图片'} · 点击查看大图</div>`
+    ? `<div class="image-wrap"><img src="${block.value}" alt="${label}中的图片" tabindex="0"></div><div class="image-caption">${markdown ? '分享链接图片' : 'Word 文档内嵌图片'} · 点击查看大图</div>`
+    : block.type === 'missing-image'
+      ? `<div class="missing-image">这张图片暂时无法从 ChatGPT 分享链接读取。<a href="${escapeHTML(block.value)}" target="_blank" rel="noopener noreferrer">在原分享页查看图片 ↗</a></div>`
     : markdown ? `<div class="markdown">${renderMarkdown(block.value)}</div>`
       : `<p>${escapeHTML(block.value).replaceAll('\n', '<br>')}</p>`).join('') || '<p class="empty">没有文字或图片</p>';
 }
@@ -114,16 +116,26 @@ function renderList() {
   $('count').textContent = query ? `找到 ${matches.length} 轮` : `共 ${doc.turns.length} 轮`;
   $('turns').innerHTML = matches.length ? matches.map(({turn, index}) => {
     const summary = textOf(turn.question).slice(0, 27) || '图片提问';
-    const hasImage = turn.question.some(b => b.type === 'image') || turn.answer.some(b => b.type === 'image');
+    const hasImage = turn.question.some(b => b.type === 'image' || b.type === 'missing-image') || turn.answer.some(b => b.type === 'image' || b.type === 'missing-image');
     return `<button class="turn ${selected === index ? 'active' : ''}" data-index="${index}"><span class="num">${String(index + 1).padStart(2, '0')}</span><b>${escapeHTML(summary)}${hasImage ? '<span class="pill">图片</span>' : ''}</b><small>${turn.warnings.length ? escapeHTML(turn.warnings.join('、')) : '完整问答'}</small></button>`;
   }).join('') : '<div class="empty">没有找到匹配的轮次</div>';
   document.querySelectorAll('.turn').forEach(button => button.addEventListener('click', () => {
     selected = Number(button.dataset.index);
     doc.selected = selected;
     render();
+    setMobileView('read');
     savePosition();
   }));
 }
+
+function setMobileView(view) {
+  document.querySelector('.app').dataset.mobileView = view;
+  document.querySelectorAll('.mobile-tabs button').forEach(button => {
+    button.setAttribute('aria-selected', String(button.dataset.view === view));
+  });
+}
+
+document.querySelectorAll('.mobile-tabs button').forEach(button => button.addEventListener('click', () => setMobileView(button.dataset.view)));
 
 function render() {
   const doc = docs[activeDoc];
@@ -135,13 +147,13 @@ function render() {
   $('counter').textContent = `${String(selected + 1).padStart(2, '0')} / ${String(doc.turns.length).padStart(2, '0')}`;
   $('crumb').textContent = `第 ${selected + 1} 轮`;
   $('docName').textContent = doc.title;
-  $('docMeta').textContent = `${doc.type === 'link' ? 'DeepSeek 链接' : 'Word 文档'} · ${doc.turns.length} 轮问答`;
+  $('docMeta').textContent = `${doc.type === 'link' ? (doc.platform || '分享') + '链接' : 'Word 文档'} · ${doc.turns.length} 轮问答`;
   $('docCrumb').textContent = doc.title;
   $('description').textContent = turn.warnings.length ? turn.warnings.join('；') : '按原始文档顺序展示，图片保留在所属消息中。';
   $('question').innerHTML = renderBlocks(turn.question, '提问', doc.type === 'link');
   $('answer').innerHTML = renderBlocks(turn.answer, '回答', doc.type === 'link');
-  $('qmeta').textContent = turn.question.some(b => b.type === 'image') ? '图文内容' : '文字内容';
-  $('ameta').textContent = turn.answer.some(b => b.type === 'image') ? '图文内容' : '文字内容';
+  $('qmeta').textContent = turn.question.some(b => b.type === 'image' || b.type === 'missing-image') ? '图文内容' : '文字内容';
+  $('ameta').textContent = turn.answer.some(b => b.type === 'image' || b.type === 'missing-image') ? '图文内容' : '文字内容';
   $('prev').disabled = selected === 0;
   $('next').disabled = selected === doc.turns.length - 1;
   $('parseStatus').textContent = '已完成解析';
@@ -192,6 +204,16 @@ async function importFiles(files) {
     }
     $('parseStatus').textContent = `正在解析 ${file.name}…`;
     try {
+      if (window.AndroidBridge) {
+        const encoded = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result.split(',')[1]);
+          reader.onerror = () => reject(new Error('无法读取文档'));
+          reader.readAsDataURL(file);
+        });
+        await addDocument(await nativeCall('parseDocx', encoded, file.name));
+        continue;
+      }
       const response = await fetch('/api/parse', {
         method: 'POST',
         headers: {'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'X-Filename': encodeURIComponent(file.name)},
@@ -208,21 +230,44 @@ async function importFiles(files) {
   $('fileInput').value = '';
 }
 
-async function addDocument(result) {
+async function addDocument(result, replaceSource = false) {
   result.selected = 0;
-  docs.push(result);
-  activeDoc = docs.length - 1;
+  const existing = replaceSource && result.sourceUrl
+    ? docs.findIndex(doc => doc.sourceUrl?.replace(/\/$/, '') === result.sourceUrl.replace(/\/$/, '')) : -1;
+  if (existing >= 0) docs[existing] = result;
+  else docs.push(result);
+  activeDoc = existing >= 0 ? existing : docs.length - 1;
   selected = 0;
   $('search').value = '';
   updateWorkspace();
   render();
+  setMobileView('list');
+  closeMobileImport();
   try { await persist(); }
   catch (_) { $('parseStatus').textContent = '导入成功，但浏览器未能保存；刷新后可能丢失'; }
 }
 
+function closeMobileImport() {
+  document.querySelector('.app').classList.remove('import-open');
+  $('mobileImportTrigger').setAttribute('aria-expanded', 'false');
+}
+$('mobileImportTrigger').addEventListener('click', () => {
+  closeMobileDocMenu();
+  const open = document.querySelector('.app').classList.toggle('import-open');
+  $('mobileImportTrigger').setAttribute('aria-expanded', String(open));
+});
+$('mobileImportBackdrop').addEventListener('click', closeMobileImport);
+$('closeImport').addEventListener('click', closeMobileImport);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeMobileImport(); closeMobileDocMenu(); } });
+
 async function importLink(url) {
   $('parseStatus').textContent = '正在读取分享链接…';
   try {
+    if (window.AndroidBridge) {
+      await addDocument(await nativeCall('parseLink', url));
+      $('linkInput').value = '';
+      return;
+    }
     const response = await fetch('/api/parse-link', {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url})
     });
@@ -236,6 +281,23 @@ async function importLink(url) {
   }
 }
 
+let nativeRequestId = 0;
+const nativeRequests = new Map();
+function nativeCall(method, ...args) {
+  return new Promise((resolve, reject) => {
+    const id = ++nativeRequestId;
+    nativeRequests.set(id, {resolve, reject});
+    window.AndroidBridge[method](...args, id);
+  });
+}
+window.nativeResolve = (id, value, error) => {
+  const request = nativeRequests.get(id);
+  if (!request) return;
+  nativeRequests.delete(id);
+  if (error) request.reject(new Error(error));
+  else request.resolve(JSON.parse(value));
+};
+
 function updateWorkspace() {
   let container = $('workspaceDocs');
   if (!container) {
@@ -247,14 +309,21 @@ function updateWorkspace() {
     workspace.append(container);
   }
   container.innerHTML = docs.map((doc, index) =>
-    `<div class="workspace-entry"><button class="workspace-doc ${index === activeDoc ? 'active' : ''}" type="button" data-index="${index}" ${index === activeDoc ? 'aria-current="true"' : ''} title="${escapeHTML(doc.filename || doc.title)}"><span class="workspace-doc-icon">DOC</span><span class="workspace-doc-text"><b>${escapeHTML(doc.filename || doc.title)}</b><small>${doc.turns.length} 轮问答 · ${doc.imageCount} 张图片</small></span></button><button class="workspace-delete" type="button" data-index="${index}" aria-label="删除 ${escapeHTML(doc.filename || doc.title)}" title="删除这份文档">×</button></div>`
+    `<div class="workspace-entry"><button class="workspace-doc ${index === activeDoc ? 'active' : ''}" type="button" data-index="${index}" ${index === activeDoc ? 'aria-current="true"' : ''} title="${escapeHTML(doc.filename || doc.title)}"><span class="workspace-doc-icon">${String(index + 1).padStart(2, '0')}</span><span class="workspace-doc-text"><b>${escapeHTML(doc.filename || doc.title)}</b><small>${doc.turns.length} 轮问答 · ${doc.imageCount} 张可查看图片${doc.turns.some(turn => [...turn.question, ...turn.answer].some(block => block.type === 'missing-image')) ? ' · 部分图片需在原页查看' : ''}</small></span></button><button class="workspace-delete" type="button" data-index="${index}" aria-label="删除 ${escapeHTML(doc.filename || doc.title)}" title="删除这份文档">×</button></div>`
   ).join('');
+  $('mobileDocLabel').textContent = docs.length ? `${String(activeDoc + 1).padStart(2, '0')} · ${docs[activeDoc].filename || docs[activeDoc].title}` : '暂无对话记录';
+  $('mobileDocTrigger').disabled = !docs.length;
+  $('mobileDocMenu').innerHTML = `<div class="mobile-doc-menu-title">选择对话记录 · ${docs.length} 份</div>` + docs.map((doc, index) =>
+    `<button class="mobile-doc-option ${index === activeDoc ? 'active' : ''}" type="button" role="option" aria-selected="${index === activeDoc}" data-index="${index}"><span class="mobile-doc-number">${String(index + 1).padStart(2, '0')}</span><span><b>${escapeHTML(doc.filename || doc.title)}</b><small>${doc.turns.length} 轮问答</small></span>${index === activeDoc ? '<span class="check" aria-hidden="true">✓</span>' : ''}</button>`
+  ).join('');
+  $('mobileDocDelete').disabled = !docs.length;
   document.querySelectorAll('.workspace-doc').forEach(button => button.addEventListener('click', () => {
     activeDoc = Number(button.dataset.index);
     selected = docs[activeDoc].selected || 0;
     $('search').value = '';
     updateWorkspace();
     render();
+    setMobileView('list');
     savePosition();
   }));
   document.querySelectorAll('.workspace-delete').forEach(button => button.addEventListener('click', async () => {
@@ -272,7 +341,31 @@ function updateWorkspace() {
   }));
 }
 
+$('mobileDocTrigger').addEventListener('click', () => {
+  closeMobileImport();
+  const open = document.querySelector('.app').classList.toggle('doc-menu-open');
+  $('mobileDocTrigger').setAttribute('aria-expanded', String(open));
+});
+function closeMobileDocMenu() {
+  document.querySelector('.app').classList.remove('doc-menu-open');
+  $('mobileDocTrigger').setAttribute('aria-expanded', 'false');
+}
+$('mobileDocBackdrop').addEventListener('click', closeMobileDocMenu);
+$('mobileDocMenu').addEventListener('click', e => {
+  const option = e.target.closest('.mobile-doc-option');
+  if (!option) return;
+  closeMobileDocMenu();
+  document.querySelector(`.workspace-doc[data-index="${option.dataset.index}"]`)?.click();
+});
+$('mobileDocDelete').addEventListener('click', () => {
+  closeMobileDocMenu();
+  document.querySelector(`.workspace-delete[data-index="${activeDoc}"]`)?.click();
+});
+
 $('importButton').addEventListener('click', () => $('fileInput').click());
+document.querySelector('a[download]').addEventListener('click', e => {
+  if (window.AndroidBridge) { e.preventDefault(); window.AndroidBridge.saveTemplate(); }
+});
 $('linkForm').addEventListener('submit', e => { e.preventDefault(); importLink($('linkInput').value.trim()); });
 $('cancelDelete').addEventListener('click', () => $('deleteDialog').close('cancel'));
 $('confirmDelete').addEventListener('click', () => $('deleteDialog').close('delete'));
@@ -283,7 +376,7 @@ $('imageDialog').addEventListener('close', () => $('previewImage').removeAttribu
 $('fileInput').addEventListener('change', e => importFiles(e.target.files));
 $('search').addEventListener('input', renderList);
 $('prev').addEventListener('click', () => { if (selected > 0) { docs[activeDoc].selected = --selected; render(); savePosition(); } });
-$('next').addEventListener('click', () => { if (selected < docs[activeDoc].turns.length - 1) { docs[activeDoc].selected = ++selected; render(); savePosition(); } });
+$('next').addEventListener('click', () => { if (selected < docs[activeDoc].turns.length - 1) { docs[activeDoc].selected = ++selected; render(); document.querySelector('.main').scrollTop = 0; savePosition(); } });
 document.addEventListener('keydown', e => {
   if (!docs.length || ['INPUT', 'SELECT'].includes(document.activeElement.tagName)) return;
   if (e.key === 'ArrowUp' && selected > 0) { docs[activeDoc].selected = --selected; render(); savePosition(); }
@@ -304,6 +397,7 @@ async function initialize() {
   } catch (_) {
     $('parseStatus').textContent = '浏览器本地存储不可用';
   }
+  if (window.AndroidBridge) { updateWorkspace(); render(); return; }
   try {
     const response = await fetch('/api/sample');
     if (!response.ok) { updateWorkspace(); render(); return; }
@@ -318,3 +412,21 @@ async function initialize() {
   } catch (_) { updateWorkspace(); render(); }
 }
 initialize();
+if (!window.AndroidBridge) {
+  let checkingImport = false;
+  setInterval(async () => {
+    if (checkingImport) return;
+    checkingImport = true;
+    try {
+      const response = await fetch('/api/pending-import');
+      if (response.ok) {
+        const result = await response.json();
+        if (result) await addDocument(result, true);
+      }
+    } catch (_) {
+      // Local server may be restarting.
+    } finally {
+      checkingImport = false;
+    }
+  }, 1500);
+}

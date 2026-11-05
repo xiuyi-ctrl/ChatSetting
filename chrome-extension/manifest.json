@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "对话拾页 · ChatGPT 图片导入",
+  "version": "0.2.1",
+  "description": "从当前已登录的 ChatGPT 分享页导入对话和可读取的图片到本地对话拾页。",
+  "permissions": ["activeTab"],
+  "host_permissions": ["http://127.0.0.1:8765/*"],
+  "content_scripts": [{
+    "matches": ["https://chatgpt.com/share/*"],
+    "js": ["content.js"],
+    "run_at": "document_idle"
+  }],
+  "action": {"default_title": "导入对话拾页", "default_popup": "popup.html"}
+}

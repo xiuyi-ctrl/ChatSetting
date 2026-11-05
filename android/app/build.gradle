@@ -1,0 +1,20 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace 'com.xiuyi.chatsetting'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'com.xiuyi.chatsetting'
+        minSdk 26
+        targetSdk 35
+        versionCode 9
+        versionName '1.0.8'
+    }
+}
+
+tasks.register('syncWebAssets', Copy) {
+    into 'src/main/assets/www'
+    from('../..') { include 'interface-sample.html', 'app.js', 'AB_conversation_template_v2.docx' }
+    from('../../assets') { include 'marked.umd.js', 'katex/**'; into 'assets' }
+}
+tasks.named('preBuild').configure { dependsOn 'syncWebAssets' }
