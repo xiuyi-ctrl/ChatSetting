@@ -53,6 +53,14 @@ function textOf(blocks) {
   return blocks.filter(b => b.type === 'text').map(b => b.value).join(' ');
 }
 
+function revealInList(container, item) {
+  if (!item || !container.clientHeight) return;
+  const bounds = item.getBoundingClientRect();
+  const area = container.getBoundingClientRect();
+  if (bounds.top < area.top) container.scrollTop -= area.top - bounds.top;
+  else if (bounds.bottom > area.bottom) container.scrollTop += bounds.bottom - area.bottom;
+}
+
 function escapeHTML(value) {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 }
@@ -117,7 +125,7 @@ function renderList() {
   $('turns').innerHTML = matches.length ? matches.map(({turn, index}) => {
     const summary = textOf(turn.question).slice(0, 27) || '图片提问';
     const hasImage = turn.question.some(b => b.type === 'image' || b.type === 'missing-image') || turn.answer.some(b => b.type === 'image' || b.type === 'missing-image');
-    return `<button class="turn ${selected === index ? 'active' : ''}" data-index="${index}"><span class="num">${String(index + 1).padStart(2, '0')}</span><b>${escapeHTML(summary)}${hasImage ? '<span class="pill">图片</span>' : ''}</b><small>${turn.warnings.length ? escapeHTML(turn.warnings.join('、')) : '完整问答'}</small></button>`;
+    return `<button class="turn ${selected === index ? 'active' : ''}" data-index="${index}"><span class="num">${String(index + 1).padStart(2, '0')}</span><b>${escapeHTML(summary)}</b><small>${turn.warnings.length ? escapeHTML(turn.warnings.join('、')) : '完整问答'}${hasImage ? '<span class="pill">图片</span>' : ''}</small></button>`;
   }).join('') : '<div class="empty">没有找到匹配的轮次</div>';
   document.querySelectorAll('.turn').forEach(button => button.addEventListener('click', () => {
     selected = Number(button.dataset.index);
@@ -126,10 +134,12 @@ function renderList() {
     setMobileView('read');
     savePosition();
   }));
+  revealInList($('turns'), $('turns').querySelector('.turn.active'));
 }
 
 function setMobileView(view) {
   document.querySelector('.app').dataset.mobileView = view;
+  if (view === 'list') revealInList($('turns'), $('turns').querySelector('.turn.active'));
   document.querySelectorAll('.mobile-tabs button').forEach(button => {
     button.setAttribute('aria-selected', String(button.dataset.view === view));
   });
@@ -398,6 +408,7 @@ function updateWorkspace() {
     catch (_) { $('parseStatus').textContent = '删除未能保存，刷新后记录可能重新出现'; }
   }));
   document.querySelectorAll('.workspace-rename').forEach(button => button.addEventListener('click', () => openRename(Number(button.dataset.index))));
+  revealInList(container, container.querySelector('.workspace-doc.active'));
 }
 
 function openRename(index) {
@@ -412,6 +423,7 @@ $('mobileDocTrigger').addEventListener('click', () => {
   closeMobileImport();
   const open = document.querySelector('.app').classList.toggle('doc-menu-open');
   $('mobileDocTrigger').setAttribute('aria-expanded', String(open));
+  if (open) revealInList($('mobileDocMenu'), $('mobileDocMenu').querySelector('.mobile-doc-option.active'));
 });
 function closeMobileDocMenu() {
   document.querySelector('.app').classList.remove('doc-menu-open');
