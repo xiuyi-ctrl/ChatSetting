@@ -98,11 +98,11 @@ function renderMarkdown(source) {
   return html;
 }
 
-function renderBlocks(blocks, label, markdown = false) {
-  return blocks.map(block => block.type === 'image'
+function renderBlocks(blocks, label, markdown = false, side = '') {
+  return blocks.map((block, index) => block.type === 'image'
     ? `<div class="image-wrap"><img src="${block.value}" alt="${label}中的图片" tabindex="0"></div><div class="image-caption">${markdown ? '分享链接图片' : 'Word 文档内嵌图片'} · 点击查看大图</div>`
     : block.type === 'missing-image'
-      ? `<div class="missing-image">这张图片暂时无法从 ChatGPT 分享链接读取。<a href="${escapeHTML(block.value)}" target="_blank" rel="noopener noreferrer">在原分享页查看图片 ↗</a></div>`
+      ? `<div class="missing-image">这张图片暂时无法从 ChatGPT 分享链接读取。<a href="${escapeHTML(block.value)}" target="_blank" rel="noopener noreferrer">在原分享页查看图片 ↗</a>${window.AndroidBridge ? `<button type="button" class="fill-image" data-side="${side}" data-index="${index}">从手机选择图片补全</button>` : ''}</div>`
     : markdown ? `<div class="markdown">${renderMarkdown(block.value)}</div>`
       : `<p>${escapeHTML(block.value).replaceAll('\n', '<br>')}</p>`).join('') || '<p class="empty">没有文字或图片</p>';
 }
@@ -150,8 +150,8 @@ function render() {
   $('docMeta').textContent = `${doc.type === 'link' ? (doc.platform || '分享') + '链接' : 'Word 文档'} · ${doc.turns.length} 轮问答`;
   $('docCrumb').textContent = doc.title;
   $('description').textContent = turn.warnings.length ? turn.warnings.join('；') : '按原始文档顺序展示，图片保留在所属消息中。';
-  $('question').innerHTML = renderBlocks(turn.question, '提问', doc.type === 'link');
-  $('answer').innerHTML = renderBlocks(turn.answer, '回答', doc.type === 'link');
+  $('question').innerHTML = renderBlocks(turn.question, '提问', doc.type === 'link', 'question');
+  $('answer').innerHTML = renderBlocks(turn.answer, '回答', doc.type === 'link', 'answer');
   $('qmeta').textContent = turn.question.some(b => b.type === 'image' || b.type === 'missing-image') ? '图文内容' : '文字内容';
   $('ameta').textContent = turn.answer.some(b => b.type === 'image' || b.type === 'missing-image') ? '图文内容' : '文字内容';
   $('prev').disabled = selected === 0;
@@ -162,8 +162,39 @@ function render() {
     img.addEventListener('click', () => openImage(img));
     img.addEventListener('keydown', e => { if (e.key === 'Enter') openImage(img); });
   });
+  document.querySelectorAll('.fill-image').forEach(button => button.addEventListener('click', () => {
+    pendingImage = {doc, turn, side: button.dataset.side, index: Number(button.dataset.index)};
+    $('imageInput').click();
+  }));
   renderList();
 }
+let pendingImage = null;
+$('imageInput').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file || !pendingImage) return;
+  const target = pendingImage;
+  pendingImage = null;
+  if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type) || file.size > 8_000_000) {
+    alert('请选择不超过 8 MB 的 PNG、JPEG、WebP 或 GIF 图片');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = async () => {
+    target.turn[target.side][target.index] = {type: 'image', value: reader.result};
+    target.doc.imageCount = (target.doc.imageCount || 0) + 1;
+    if (![...target.turn.question, ...target.turn.answer].some(block => block.type === 'missing-image')) {
+      target.turn.warnings = target.turn.warnings.filter(warning => warning !== '图片需在原分享页查看');
+      target.doc.warnings = target.doc.warnings.filter(warning => warning !== `第 ${target.turn.line} 轮：图片需在原分享页查看`);
+    }
+    updateWorkspace();
+    render();
+    try { await persist(); }
+    catch (_) { $('parseStatus').textContent = '图片未能保存，刷新后可能丢失'; }
+  };
+  reader.onerror = () => alert('无法读取所选图片');
+  reader.readAsDataURL(file);
+});
 
 function openImage(img) {
   $('previewImage').src = img.currentSrc || img.src;
@@ -272,10 +303,16 @@ async function importLink(url) {
     if (window.AndroidBridge) {
       const dialog = $('importProgressDialog');
       $('importProgressText').textContent = '正在连接分享链接…';
+      $('importProgressBar').value = 0;
+      $('importProgressPercent').textContent = '0%';
       dialog.showModal();
       try {
         await addDocument(await nativeCall('parseLink', url));
         $('linkInput').value = '';
+        $('importProgressText').textContent = '导入完成';
+        $('importProgressBar').value = 100;
+        $('importProgressPercent').textContent = '100%';
+        await new Promise(resolve => setTimeout(resolve, 300));
       } finally {
         dialog.close();
       }
@@ -310,8 +347,12 @@ window.nativeResolve = (id, value, error) => {
   if (error) request.reject(new Error(error));
   else request.resolve(JSON.parse(value));
 };
-window.nativeProgress = (id, message) => {
-  if (nativeRequests.has(id) && $('importProgressDialog').open) $('importProgressText').textContent = message;
+window.nativeProgress = (id, percent, message) => {
+  if (!nativeRequests.has(id) || !$('importProgressDialog').open) return;
+  const value = Math.max($('importProgressBar').value, Math.min(99, Math.max(0, percent)));
+  $('importProgressBar').value = value;
+  $('importProgressPercent').textContent = `${value}%`;
+  $('importProgressText').textContent = message;
 };
 
 function updateWorkspace() {

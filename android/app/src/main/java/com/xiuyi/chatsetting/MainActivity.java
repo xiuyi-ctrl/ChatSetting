@@ -63,8 +63,9 @@ public class MainActivity extends Activity {
             @Override public boolean onShowFileChooser(WebView view,ValueCallback<Uri[]> callback,FileChooserParams params) {
                 if(fileCallback!=null) fileCallback.onReceiveValue(null);
                 fileCallback=callback;
-                Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-                intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,true);
+                boolean image=params.getAcceptTypes().length>0 && params.getAcceptTypes()[0].startsWith("image/");
+                Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType(image?"image/*":"application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+                intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,!image);
                 startActivityForResult(intent,FILE_PICK);
                 return true;
             }
@@ -98,8 +99,8 @@ public class MainActivity extends Activity {
     private void respond(int id,String value,String error) {
         runOnUiThread(() -> web.evaluateJavascript("window.nativeResolve("+id+","+org.json.JSONObject.quote(value)+","+org.json.JSONObject.quote(error)+")",null));
     }
-    private void progress(int id,String message) {
-        runOnUiThread(() -> web.evaluateJavascript("window.nativeProgress("+id+","+org.json.JSONObject.quote(message)+")",null));
+    private void progress(int id,int percent,String message) {
+        runOnUiThread(() -> web.evaluateJavascript("window.nativeProgress("+id+","+percent+","+org.json.JSONObject.quote(message)+")",null));
     }
     private final class Bridge {
         @JavascriptInterface public void saveTemplate() { runOnUiThread(() -> MainActivity.this.saveTemplate()); }
@@ -111,7 +112,11 @@ public class MainActivity extends Activity {
         }
         @JavascriptInterface public void parseLink(String url,int id) {
             executor.execute(() -> {
-                try { respond(id,ShareParser.parse(url,message -> progress(id,message)).toString(),""); }
+                try {
+                    String result=ShareParser.parse(url,(percent,message) -> progress(id,percent,message)).toString();
+                    progress(id,97,"正在保存对话…");
+                    respond(id,result,"");
+                }
                 catch(Exception ex) { respond(id,"",ex.getMessage()==null?"链接读取失败":ex.getMessage()); }
             });
         }

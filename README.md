@@ -29,6 +29,6 @@ python server.py
 
 ## Android APK
 
-调试安装包位于 `android/app/build/outputs/apk/debug/app-debug.apk`。安装后可在手机上独立导入 Word 文档，或联网导入公开 ChatGPT / DeepSeek 分享链接，无需启动电脑上的 Python 服务。APK 不包含本地 `sample.docx`。目前为调试签名版本；正式发布需配置发布签名，并在真机验证文件选择、链接导入、图片和公式。
+调试安装包位于 `android/app/build/outputs/apk/debug/app-debug.apk`。安装后可在手机上独立导入 Word 文档，或联网导入公开 ChatGPT / DeepSeek 分享链接，无需启动电脑上的 Python 服务。手机端会尝试下载 ChatGPT 分享图片；若图片需要登录而无法下载，可在缺图位置点击“从手机选择图片补全”，从相册选取已保存的原图。APK 不包含本地 `sample.docx`。目前为调试签名版本；正式发布需配置发布签名，并在真机验证文件选择、链接导入、图片和公式。
 
 已安装 Android SDK 与 Gradle 时，在 `android` 目录运行 `gradlew.bat assembleDebug` 可重新构建。构建前会自动同步网页脚本、样式、公式资源和空白模板。

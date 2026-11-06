@@ -5,25 +5,26 @@ import org.json.*;
 import java.io.*;
 import java.net.*;
 import java.util.regex.*;
-import java.util.function.Consumer;
+import java.util.function.BiConsumer;
 
 final class ShareParser {
     private static final Pattern URL = Pattern.compile("https://chat\\.deepseek\\.com/share/([a-zA-Z0-9]+)/?");
     private static final Pattern CHATGPT_URL = Pattern.compile("https://chatgpt\\.com/share/([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})/?");
-    static JSONObject parse(String url,Consumer<String> progress) throws Exception {
+    static JSONObject parse(String url,BiConsumer<Integer,String> progress) throws Exception {
         if(CHATGPT_URL.matcher(url.trim()).matches()) return parseChatGpt(url.trim(),progress);
         Matcher match=URL.matcher(url.trim());
         if(!match.matches()) throw new IllegalArgumentException("请提供公开的 ChatGPT 或 DeepSeek 分享链接");
         String id=match.group(1);
-        progress.accept("正在读取 DeepSeek 分享内容…");
+        progress.accept(5,"正在读取 DeepSeek 分享内容…");
         JSONObject payload=new JSONObject(new String(get("https://chat.deepseek.com/api/v0/share/content?share_id="+id,"https://chat.deepseek.com/share/"+id),"UTF-8"));
         JSONObject data=payload.optJSONObject("data");
         if(data==null || data.optInt("biz_code",-1)!=0) throw new IllegalArgumentException("DeepSeek 未返回这条分享记录，请检查链接是否仍公开有效");
         JSONObject shared=data.optJSONObject("biz_data");
         if(shared==null) throw new IllegalArgumentException("分享记录内容为空");
+        progress.accept(20,"分享内容已读取，正在解析…");
         JSONArray messages=shared.optJSONArray("messages"), turns=new JSONArray(), warnings=new JSONArray(); int imageCount=0;
         if(messages!=null) for(int i=0;i<messages.length();i++) {
-            if(i%5==0 || i==messages.length()-1) progress.accept("正在处理消息 "+(i+1)+" / "+messages.length());
+            if(i%5==0 || i==messages.length()-1) progress.accept(20+75*(i+1)/messages.length(),"正在处理消息 "+(i+1)+" / "+messages.length());
             JSONObject message=messages.optJSONObject(i); if(message==null) continue;
             JSONArray fragments=message.optJSONArray("fragments"), blocks=new JSONArray();
             if(fragments!=null) for(int j=0;j<fragments.length();j++) {
@@ -58,15 +59,18 @@ final class ShareParser {
         for(int i=0;i<turns.length();i++) if(turns.getJSONObject(i).getJSONArray("answer").length()==0) { turns.getJSONObject(i).getJSONArray("warnings").put("缺少回答"); warnings.put("第 "+(i+1)+" 轮：缺少回答"); }
         return new JSONObject().put("title",shared.optString("title","DeepSeek 对话")).put("filename","DeepSeek · "+id).put("type","link").put("platform","DeepSeek").put("sourceUrl",url).put("turns",turns).put("warnings",warnings).put("imageCount",imageCount);
     }
-    private static JSONObject parseChatGpt(String url,Consumer<String> progress) throws Exception {
+    private static JSONObject parseChatGpt(String url,BiConsumer<Integer,String> progress) throws Exception {
         Matcher match=CHATGPT_URL.matcher(url); match.matches(); String id=match.group(1);
         JSONObject shared;
-        progress.accept("正在读取 ChatGPT 分享内容…");
+        progress.accept(5,"正在读取 ChatGPT 分享内容…");
         try { shared=new JSONObject(new String(get("https://chatgpt.com/backend-api/share/"+id,url),"UTF-8")); }
         catch(Exception ex) { throw new IllegalArgumentException("ChatGPT 分享内容读取失败；请确认链接公开有效，或稍后重试",ex); }
+        progress.accept(20,"分享内容已读取，正在解析…");
         JSONArray nodes=shared.optJSONArray("linear_conversation"), turns=new JSONArray(), warnings=new JSONArray();
+        String conversationId=shared.optString("backing_conversation_id");
+        int imageCount=0;
         if(nodes!=null) for(int i=0;i<nodes.length();i++) {
-            if(i%5==0 || i==nodes.length()-1) progress.accept("正在处理消息 "+(i+1)+" / "+nodes.length());
+            if(i%5==0 || i==nodes.length()-1) progress.accept(20+75*(i+1)/nodes.length(),"正在处理消息 "+(i+1)+" / "+nodes.length());
             JSONObject node=nodes.optJSONObject(i), message=node==null?null:node.optJSONObject("message");
             if(message==null) continue;
             JSONObject author=message.optJSONObject("author"), content=message.optJSONObject("content");
@@ -79,7 +83,25 @@ final class ShareParser {
                 else if(part instanceof JSONObject) {
                     JSONObject item=(JSONObject)part;
                     if(!item.optString("text").trim().isEmpty()) blocks.put(block("text",item.optString("text")));
-                    else if(item.optString("content_type").equals("image_asset_pointer")) blocks.put(block("missing-image",url));
+                    else if(item.optString("content_type").equals("image_asset_pointer")) {
+                        String pointer=item.optString("asset_pointer");
+                        String assetId=pointer.contains("://")?pointer.substring(pointer.indexOf("://")+3).split("\\?")[0]:"";
+                        try {
+                            if(assetId.isEmpty()) throw new IOException("缺少图片 ID");
+                            progress.accept(20+75*(i+1)/nodes.length(),"正在获取图片 "+(imageCount+1)+"…");
+                            String base="https://chatgpt.com/backend-api/files/download/"+URLEncoder.encode(assetId,"UTF-8");
+                            byte[] bytes=null;
+                            if(!conversationId.isEmpty()) try {
+                                bytes=get(base+"?conversation_id="+URLEncoder.encode(conversationId,"UTF-8")+"&inline=false",url);
+                                if(bytes.length>8_000_000) throw new IOException("图片过大");
+                                imageMime(bytes);
+                            } catch(Exception ignored) { bytes=null; }
+                            if(bytes==null) bytes=get(base+"?shared_conversation_id="+id+"&inline=false",url);
+                            if(bytes.length>8_000_000) throw new IOException("图片过大");
+                            blocks.put(block("image","data:"+imageMime(bytes)+";base64,"+Base64.encodeToString(bytes,Base64.NO_WRAP)));
+                            imageCount++;
+                        } catch(Exception ex) { blocks.put(block("missing-image",url)); }
+                    }
                 }
             }
             if(role.equals("user")) turns.put(new JSONObject().put("question",blocks).put("answer",new JSONArray()).put("warnings",new JSONArray()).put("line",turns.length()+1));
@@ -99,7 +121,7 @@ final class ShareParser {
             if(missingImage) { turn.getJSONArray("warnings").put("图片需在原分享页查看"); warnings.put("第 "+(i+1)+" 轮：图片需在原分享页查看"); }
             if(turn.getJSONArray("answer").length()==0) { turn.getJSONArray("warnings").put("缺少回答"); warnings.put("第 "+(i+1)+" 轮：缺少回答"); }
         }
-        return new JSONObject().put("title",shared.optString("title","ChatGPT 对话")).put("filename","ChatGPT · "+id).put("type","link").put("platform","ChatGPT").put("sourceUrl",url).put("turns",turns).put("warnings",warnings).put("imageCount",0);
+        return new JSONObject().put("title",shared.optString("title","ChatGPT 对话")).put("filename","ChatGPT · "+id).put("type","link").put("platform","ChatGPT").put("sourceUrl",url).put("turns",turns).put("warnings",warnings).put("imageCount",imageCount);
     }
     private static JSONObject block(String type,String value) throws Exception { return new JSONObject().put("type",type).put("value",value); }
     private static String imageMime(byte[] bytes) throws IOException {
@@ -113,7 +135,7 @@ final class ShareParser {
         HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();
         c.setConnectTimeout(15000); c.setReadTimeout(15000);
         c.setRequestProperty("User-Agent","Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36");
-        c.setRequestProperty("Accept","application/json"); c.setRequestProperty("Accept-Language","zh-CN,zh;q=0.9");
+        c.setRequestProperty("Accept",url.contains("/files/download/")?"image/*":"application/json"); c.setRequestProperty("Accept-Language","zh-CN,zh;q=0.9");
         if(referer!=null) c.setRequestProperty("Referer",referer);
         try {
             if(c.getResponseCode()!=200) throw new IOException("HTTP "+c.getResponseCode());
