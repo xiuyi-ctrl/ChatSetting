@@ -234,7 +234,13 @@ async function addDocument(result, replaceSource = false) {
   result.selected = 0;
   const existing = replaceSource && result.sourceUrl
     ? docs.findIndex(doc => doc.sourceUrl?.replace(/\/$/, '') === result.sourceUrl.replace(/\/$/, '')) : -1;
-  if (existing >= 0) docs[existing] = result;
+  if (existing >= 0) {
+    if (docs[existing].renamed) {
+      result.title = docs[existing].title;
+      result.renamed = true;
+    }
+    docs[existing] = result;
+  }
   else docs.push(result);
   activeDoc = existing >= 0 ? existing : docs.length - 1;
   selected = 0;
@@ -309,12 +315,13 @@ function updateWorkspace() {
     workspace.append(container);
   }
   container.innerHTML = docs.map((doc, index) =>
-    `<div class="workspace-entry"><button class="workspace-doc ${index === activeDoc ? 'active' : ''}" type="button" data-index="${index}" ${index === activeDoc ? 'aria-current="true"' : ''} title="${escapeHTML(doc.filename || doc.title)}"><span class="workspace-doc-icon">${String(index + 1).padStart(2, '0')}</span><span class="workspace-doc-text"><b>${escapeHTML(doc.filename || doc.title)}</b><small>${doc.turns.length} 轮问答 · ${doc.imageCount} 张可查看图片${doc.turns.some(turn => [...turn.question, ...turn.answer].some(block => block.type === 'missing-image')) ? ' · 部分图片需在原页查看' : ''}</small></span></button><button class="workspace-delete" type="button" data-index="${index}" aria-label="删除 ${escapeHTML(doc.filename || doc.title)}" title="删除这份文档">×</button></div>`
+    `<div class="workspace-entry"><button class="workspace-doc ${index === activeDoc ? 'active' : ''}" type="button" data-index="${index}" ${index === activeDoc ? 'aria-current="true"' : ''} title="${escapeHTML(doc.title || doc.filename)}"><span class="workspace-doc-icon">${String(index + 1).padStart(2, '0')}</span><span class="workspace-doc-text"><b>${escapeHTML(doc.title || doc.filename)}</b><small>${doc.turns.length} 轮问答 · ${doc.imageCount} 张可查看图片${doc.turns.some(turn => [...turn.question, ...turn.answer].some(block => block.type === 'missing-image')) ? ' · 部分图片需在原页查看' : ''}</small></span></button><button class="workspace-rename" type="button" data-index="${index}" aria-label="重命名 ${escapeHTML(doc.title || doc.filename)}" title="重命名标题">✎</button><button class="workspace-delete" type="button" data-index="${index}" aria-label="删除 ${escapeHTML(doc.title || doc.filename)}" title="删除这份文档">×</button></div>`
   ).join('');
-  $('mobileDocLabel').textContent = docs.length ? `${String(activeDoc + 1).padStart(2, '0')} · ${docs[activeDoc].filename || docs[activeDoc].title}` : '暂无对话记录';
+  $('mobileDocLabel').textContent = docs.length ? `${String(activeDoc + 1).padStart(2, '0')} · ${docs[activeDoc].title || docs[activeDoc].filename}` : '暂无对话记录';
   $('mobileDocTrigger').disabled = !docs.length;
+  $('mobileDocRename').disabled = !docs.length;
   $('mobileDocMenu').innerHTML = `<div class="mobile-doc-menu-title">选择对话记录 · ${docs.length} 份</div>` + docs.map((doc, index) =>
-    `<button class="mobile-doc-option ${index === activeDoc ? 'active' : ''}" type="button" role="option" aria-selected="${index === activeDoc}" data-index="${index}"><span class="mobile-doc-number">${String(index + 1).padStart(2, '0')}</span><span><b>${escapeHTML(doc.filename || doc.title)}</b><small>${doc.turns.length} 轮问答</small></span>${index === activeDoc ? '<span class="check" aria-hidden="true">✓</span>' : ''}</button>`
+    `<button class="mobile-doc-option ${index === activeDoc ? 'active' : ''}" type="button" role="option" aria-selected="${index === activeDoc}" data-index="${index}"><span class="mobile-doc-number">${String(index + 1).padStart(2, '0')}</span><span><b>${escapeHTML(doc.title || doc.filename)}</b><small>${doc.turns.length} 轮问答</small></span>${index === activeDoc ? '<span class="check" aria-hidden="true">✓</span>' : ''}</button>`
   ).join('');
   $('mobileDocDelete').disabled = !docs.length;
   document.querySelectorAll('.workspace-doc').forEach(button => button.addEventListener('click', () => {
@@ -339,6 +346,15 @@ function updateWorkspace() {
     try { await persist(); }
     catch (_) { $('parseStatus').textContent = '删除未能保存，刷新后记录可能重新出现'; }
   }));
+  document.querySelectorAll('.workspace-rename').forEach(button => button.addEventListener('click', () => openRename(Number(button.dataset.index))));
+}
+
+function openRename(index) {
+  $('renameDialog').dataset.index = index;
+  $('renameInput').value = docs[index].title || docs[index].filename;
+  $('renameDialog').showModal();
+  $('renameInput').focus();
+  $('renameInput').select();
 }
 
 $('mobileDocTrigger').addEventListener('click', () => {
@@ -361,6 +377,24 @@ $('mobileDocDelete').addEventListener('click', () => {
   closeMobileDocMenu();
   document.querySelector(`.workspace-delete[data-index="${activeDoc}"]`)?.click();
 });
+$('mobileDocRename').addEventListener('click', () => {
+  closeMobileDocMenu();
+  openRename(activeDoc);
+});
+$('renameForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const title = $('renameInput').value.trim();
+  if (!title) { $('renameInput').value = ''; $('renameInput').focus(); return; }
+  const doc = docs[Number($('renameDialog').dataset.index)];
+  doc.title = title;
+  doc.renamed = true;
+  $('renameDialog').close();
+  updateWorkspace();
+  render();
+  try { await persist(); }
+  catch (_) { $('parseStatus').textContent = '重命名未能保存，刷新后可能恢复原标题'; }
+});
+$('cancelRename').addEventListener('click', () => $('renameDialog').close());
 
 $('importButton').addEventListener('click', () => $('fileInput').click());
 document.querySelector('a[download]').addEventListener('click', e => {
