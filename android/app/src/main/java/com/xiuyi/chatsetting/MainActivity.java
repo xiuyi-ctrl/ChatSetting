@@ -98,6 +98,9 @@ public class MainActivity extends Activity {
     private void respond(int id,String value,String error) {
         runOnUiThread(() -> web.evaluateJavascript("window.nativeResolve("+id+","+org.json.JSONObject.quote(value)+","+org.json.JSONObject.quote(error)+")",null));
     }
+    private void progress(int id,String message) {
+        runOnUiThread(() -> web.evaluateJavascript("window.nativeProgress("+id+","+org.json.JSONObject.quote(message)+")",null));
+    }
     private final class Bridge {
         @JavascriptInterface public void saveTemplate() { runOnUiThread(() -> MainActivity.this.saveTemplate()); }
         @JavascriptInterface public void parseDocx(String encoded,String name,int id) {
@@ -108,7 +111,7 @@ public class MainActivity extends Activity {
         }
         @JavascriptInterface public void parseLink(String url,int id) {
             executor.execute(() -> {
-                try { respond(id,ShareParser.parse(url).toString(),""); }
+                try { respond(id,ShareParser.parse(url,message -> progress(id,message)).toString(),""); }
                 catch(Exception ex) { respond(id,"",ex.getMessage()==null?"链接读取失败":ex.getMessage()); }
             });
         }

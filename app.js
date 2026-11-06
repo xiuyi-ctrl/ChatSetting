@@ -270,8 +270,15 @@ async function importLink(url) {
   $('parseStatus').textContent = '正在读取分享链接…';
   try {
     if (window.AndroidBridge) {
-      await addDocument(await nativeCall('parseLink', url));
-      $('linkInput').value = '';
+      const dialog = $('importProgressDialog');
+      $('importProgressText').textContent = '正在连接分享链接…';
+      dialog.showModal();
+      try {
+        await addDocument(await nativeCall('parseLink', url));
+        $('linkInput').value = '';
+      } finally {
+        dialog.close();
+      }
       return;
     }
     const response = await fetch('/api/parse-link', {
@@ -302,6 +309,9 @@ window.nativeResolve = (id, value, error) => {
   nativeRequests.delete(id);
   if (error) request.reject(new Error(error));
   else request.resolve(JSON.parse(value));
+};
+window.nativeProgress = (id, message) => {
+  if (nativeRequests.has(id) && $('importProgressDialog').open) $('importProgressText').textContent = message;
 };
 
 function updateWorkspace() {

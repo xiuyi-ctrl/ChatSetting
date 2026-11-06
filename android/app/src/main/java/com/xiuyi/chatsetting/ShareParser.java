@@ -5,15 +5,17 @@ import org.json.*;
 import java.io.*;
 import java.net.*;
 import java.util.regex.*;
+import java.util.function.Consumer;
 
 final class ShareParser {
     private static final Pattern URL = Pattern.compile("https://chat\\.deepseek\\.com/share/([a-zA-Z0-9]+)/?");
     private static final Pattern CHATGPT_URL = Pattern.compile("https://chatgpt\\.com/share/([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})/?");
-    static JSONObject parse(String url) throws Exception {
-        if(CHATGPT_URL.matcher(url.trim()).matches()) return parseChatGpt(url.trim());
+    static JSONObject parse(String url,Consumer<String> progress) throws Exception {
+        if(CHATGPT_URL.matcher(url.trim()).matches()) return parseChatGpt(url.trim(),progress);
         Matcher match=URL.matcher(url.trim());
         if(!match.matches()) throw new IllegalArgumentException("请提供公开的 ChatGPT 或 DeepSeek 分享链接");
         String id=match.group(1);
+        progress.accept("正在读取 DeepSeek 分享内容…");
         JSONObject payload=new JSONObject(new String(get("https://chat.deepseek.com/api/v0/share/content?share_id="+id,"https://chat.deepseek.com/share/"+id),"UTF-8"));
         JSONObject data=payload.optJSONObject("data");
         if(data==null || data.optInt("biz_code",-1)!=0) throw new IllegalArgumentException("DeepSeek 未返回这条分享记录，请检查链接是否仍公开有效");
@@ -21,6 +23,7 @@ final class ShareParser {
         if(shared==null) throw new IllegalArgumentException("分享记录内容为空");
         JSONArray messages=shared.optJSONArray("messages"), turns=new JSONArray(), warnings=new JSONArray(); int imageCount=0;
         if(messages!=null) for(int i=0;i<messages.length();i++) {
+            if(i%5==0 || i==messages.length()-1) progress.accept("正在处理消息 "+(i+1)+" / "+messages.length());
             JSONObject message=messages.optJSONObject(i); if(message==null) continue;
             JSONArray fragments=message.optJSONArray("fragments"), blocks=new JSONArray();
             if(fragments!=null) for(int j=0;j<fragments.length();j++) {
@@ -55,13 +58,15 @@ final class ShareParser {
         for(int i=0;i<turns.length();i++) if(turns.getJSONObject(i).getJSONArray("answer").length()==0) { turns.getJSONObject(i).getJSONArray("warnings").put("缺少回答"); warnings.put("第 "+(i+1)+" 轮：缺少回答"); }
         return new JSONObject().put("title",shared.optString("title","DeepSeek 对话")).put("filename","DeepSeek · "+id).put("type","link").put("platform","DeepSeek").put("sourceUrl",url).put("turns",turns).put("warnings",warnings).put("imageCount",imageCount);
     }
-    private static JSONObject parseChatGpt(String url) throws Exception {
+    private static JSONObject parseChatGpt(String url,Consumer<String> progress) throws Exception {
         Matcher match=CHATGPT_URL.matcher(url); match.matches(); String id=match.group(1);
         JSONObject shared;
+        progress.accept("正在读取 ChatGPT 分享内容…");
         try { shared=new JSONObject(new String(get("https://chatgpt.com/backend-api/share/"+id,url),"UTF-8")); }
         catch(Exception ex) { throw new IllegalArgumentException("ChatGPT 分享内容读取失败；请确认链接公开有效，或稍后重试",ex); }
         JSONArray nodes=shared.optJSONArray("linear_conversation"), turns=new JSONArray(), warnings=new JSONArray();
         if(nodes!=null) for(int i=0;i<nodes.length();i++) {
+            if(i%5==0 || i==nodes.length()-1) progress.accept("正在处理消息 "+(i+1)+" / "+nodes.length());
             JSONObject node=nodes.optJSONObject(i), message=node==null?null:node.optJSONObject("message");
             if(message==null) continue;
             JSONObject author=message.optJSONObject("author"), content=message.optJSONObject("content");
