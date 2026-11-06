@@ -56,19 +56,7 @@ button.addEventListener('click', async () => {
       throw new Error('扩展尚未进入此页面，请刷新分享页后重试。');
     });
     if (data?.error) throw new Error(data.error);
-    if (pointers.length === 1 && data.unresolved && Object.values(data.screenshots || {}).some(Boolean)) {
-      status.textContent = '正在截取已打开的大图预览…';
-      try {
-        const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, {format: 'png'});
-        for (const [id, rect] of Object.entries(data.screenshots)) {
-          if (rect) data.images[id] = await cropScreenshot(screenshot, rect, data.viewport);
-        }
-        data.unresolved = pointers.length - Object.keys(data.images).length;
-      } catch (error) {
-        data.diagnostics.failures.push(`屏幕截取失败：${error.message}`);
-      }
-    }
-    if (pointers.length > 1) {
+    if (data.unresolved) {
       for (const [index, id] of pointers.entries()) {
         if (data.images[id]) continue;
         const name = names[id];
@@ -76,9 +64,12 @@ button.addEventListener('click', async () => {
         status.textContent = `正在抓取第 ${index + 1}/${pointers.length} 张：${name}`;
         try {
           const preview = await chrome.tabs.sendMessage(tab.id, {action: 'open-preview', name, size: sizes[id]});
-          if (preview.error || !preview.rect) throw new Error(preview.error || '未找到大图预览');
-          const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, {format: 'png'});
-          data.images[id] = await cropScreenshot(screenshot, preview.rect, preview.viewport);
+          if (preview.error || (!preview.image && !preview.rect)) throw new Error(preview.error || '未找到大图预览');
+          if (preview.image) data.images[id] = preview.image;
+          else {
+            const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, {format: 'png'});
+            data.images[id] = await cropScreenshot(screenshot, preview.rect, preview.viewport);
+          }
           await chrome.tabs.sendMessage(tab.id, {action: 'close-preview', size: sizes[id]});
           await new Promise(resolve => setTimeout(resolve, 550));
         } catch (error) {

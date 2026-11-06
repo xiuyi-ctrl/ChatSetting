@@ -32,7 +32,6 @@ function captureImage(img) {
 }
 
 function previewRect(size) {
-  if (!size?.width || !size?.height) return null;
   const darkCorner = (x, y) => {
     for (let element = document.elementFromPoint(x, y); element; element = element.parentElement) {
       const color = getComputedStyle(element).backgroundColor.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?/);
@@ -45,13 +44,13 @@ function previewRect(size) {
     [margin, innerHeight - margin], [innerWidth - margin, innerHeight - margin]]
     .filter(([x, y]) => darkCorner(x, y)).length;
   if (!document.querySelector('[aria-modal="true"]') && dark < 3) return null;
-  const ratio = size.width / size.height;
+  const ratio = size?.width && size?.height ? size.width / size.height : null;
   let best = null;
-  for (const element of document.querySelectorAll('body *')) {
+  for (const element of document.querySelectorAll('img')) {
     const rect = element.getBoundingClientRect();
-    if (rect.width < innerWidth * 0.45 || rect.height < innerHeight * 0.35 ||
+    if (rect.width < innerWidth * 0.35 || rect.height < innerHeight * 0.3 ||
         rect.left < 0 || rect.top < 0 || rect.right > innerWidth || rect.bottom > innerHeight ||
-        Math.abs(rect.width / rect.height - ratio) > 0.04) continue;
+        (ratio && Math.abs(rect.width / rect.height - ratio) > 0.2)) continue;
     if (!best || rect.width * rect.height > best.width * best.height) {
       best = {x: rect.x, y: rect.y, width: rect.width, height: rect.height};
     }
@@ -94,20 +93,37 @@ async function openPreview(name, size) {
   label.scrollIntoView({block: 'center'});
   await pause(150);
   const labelRect = label.getBoundingClientRect();
-  const thumbnails = [...document.querySelectorAll('body *')].map(element => element.getBoundingClientRect())
-    .filter(rect => rect.width >= 70 && rect.width <= 220 && rect.height >= 70 && rect.height <= 220 &&
-      rect.bottom <= labelRect.top + 30 && rect.bottom >= labelRect.top - 250 &&
-      Math.abs(rect.x + rect.width / 2 - (labelRect.x + labelRect.width / 2)) < 350)
-    .sort((a, b) => Math.abs(a.bottom - labelRect.top) - Math.abs(b.bottom - labelRect.top))
-    .slice(0, 8).map(rect => document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
-  const targets = [...thumbnails, label.closest('button,[role="button"]'), label, label.parentElement, label.parentElement?.parentElement]
+  const thumbnails = [...document.querySelectorAll('img')].filter(img => {
+    const rect = img.getBoundingClientRect();
+    return rect.width >= 70 && rect.width <= 300 && rect.height >= 70 && rect.height <= 300 &&
+      rect.bottom <= labelRect.top + 40 && rect.bottom >= labelRect.top - 350 &&
+      Math.abs(rect.x + rect.width / 2 - (labelRect.x + labelRect.width / 2)) < 350;
+  }).sort((a, b) => Math.abs(a.getBoundingClientRect().bottom - labelRect.top) -
+    Math.abs(b.getBoundingClientRect().bottom - labelRect.top)).slice(0, 8);
+  const targets = [label.closest('button,[role="button"]'), ...thumbnails.flatMap(img => [img.closest('button,[role="button"]'), img]),
+    label, label.parentElement, label.parentElement?.parentElement]
     .filter((item, index, all) => item && all.indexOf(item) === index);
   for (const target of targets) {
     target.click();
     for (let attempt = 0; attempt < 5; attempt++) {
       await pause(200);
       const rect = previewRect(size);
-      if (rect) return {rect, viewport: {width: innerWidth, height: innerHeight}};
+      if (!rect) continue;
+      await pause(500);
+      const settled = previewRect(size);
+      if (!settled || Math.abs(settled.width - rect.width) > 2 || Math.abs(settled.height - rect.height) > 2) continue;
+      const image = [...document.images].find(img => {
+        const bounds = img.getBoundingClientRect();
+        return Math.abs(bounds.x - settled.x) < 2 && Math.abs(bounds.y - settled.y) < 2 &&
+          Math.abs(bounds.width - settled.width) < 2 && Math.abs(bounds.height - settled.height) < 2;
+      });
+      if (image) {
+        try { return {image: await fetchImage(image.currentSrc || image.src)}; }
+        catch (_) {
+          try { return {image: captureImage(image)}; } catch (_) { /* Use a screenshot below. */ }
+        }
+      }
+      return {rect: settled, viewport: {width: innerWidth, height: innerHeight}};
     }
   }
   throw new Error(`无法打开 ${name} 的大图预览`);
