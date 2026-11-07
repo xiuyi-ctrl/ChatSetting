@@ -23,7 +23,7 @@ final class ShareParser {
         JSONObject shared=data.optJSONObject("biz_data");
         if(shared==null) throw new IllegalArgumentException("分享记录内容为空");
         progress.accept(20,"分享内容已读取，正在解析…");
-        JSONArray messages=shared.optJSONArray("messages"), turns=new JSONArray(), warnings=new JSONArray(); int imageCount=0;
+        JSONArray messages=shared.optJSONArray("messages"), turns=new JSONArray(), warnings=new JSONArray(); int imageCount=0, attachmentBytes=0;
         if(messages!=null) for(int i=0;i<messages.length();i++) {
             if(i%5==0 || i==messages.length()-1) progress.accept(20+75*(i+1)/messages.length(),"正在处理消息 "+(i+1)+" / "+messages.length());
             JSONObject message=messages.optJSONObject(i); if(message==null) continue;
@@ -57,7 +57,18 @@ final class ShareParser {
                                 blocks.put(block("image","data:"+mime+";base64,"+Base64.encodeToString(bytes,Base64.NO_WRAP))); imageCount++; continue;
                             } catch(Exception ex) { warnings.put("图片 "+name+" 未能下载"); }
                         }
-                        blocks.put(new JSONObject().put("type","attachment").put("value",name).put("size",file.optLong("file_size")).put("url",url));
+                        JSONObject attachment=new JSONObject().put("type","attachment").put("value",name).put("size",file.optLong("file_size")).put("url",url);
+                        if(path.startsWith("/file?") && file.optLong("file_size")>0 && file.optLong("file_size")<=10_000_000 && attachmentBytes+file.optLong("file_size")<=50_000_000) {
+                            try {
+                                byte[] bytes=get("https://files.deepseeksvc.com/api"+path+"&ty=r",null);
+                                if(bytes.length>10_000_000 || attachmentBytes+bytes.length>50_000_000) throw new IOException("文件过大");
+                                attachment.put("data",Base64.encodeToString(bytes,Base64.NO_WRAP));
+                                attachmentBytes+=bytes.length;
+                                if(bytes.length<=1_000_000 && (name.toLowerCase().endsWith(".md") || name.toLowerCase().endsWith(".txt")))
+                                    attachment.put("preview",new String(bytes,"UTF-8"));
+                            } catch(Exception ex) { warnings.put("附件 "+name+" 未能下载"); }
+                        }
+                        blocks.put(attachment);
                     }
                 }
             }

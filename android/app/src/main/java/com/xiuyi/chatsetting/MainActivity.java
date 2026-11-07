@@ -16,9 +16,10 @@ import java.util.concurrent.*;
 
 public class MainActivity extends Activity {
     private static final String ROOT="https://appassets.androidplatform.net/assets/www/";
-    private static final int FILE_PICK=100, TEMPLATE_SAVE=101;
+    private static final int FILE_PICK=100, TEMPLATE_SAVE=101, ATTACHMENT_SAVE=102;
     private WebView web;
     private ValueCallback<Uri[]> fileCallback;
+    private byte[] pendingAttachment;
     private final ExecutorService executor=Executors.newSingleThreadExecutor();
 
     @Override public void onCreate(Bundle state) {
@@ -90,6 +91,12 @@ public class MainActivity extends Activity {
                 else if(data.getData()!=null) uris=new Uri[]{data.getData()};
             }
             fileCallback.onReceiveValue(uris); fileCallback=null;
+        } else if(request==ATTACHMENT_SAVE) {
+            if(result==RESULT_OK && data!=null && data.getData()!=null && pendingAttachment!=null) {
+                try(OutputStream out=getContentResolver().openOutputStream(data.getData())) { out.write(pendingAttachment); }
+                catch(IOException ignored) {}
+            }
+            pendingAttachment=null;
         } else if(request==TEMPLATE_SAVE && result==RESULT_OK && data!=null && data.getData()!=null) {
             try(InputStream in=getAssets().open("www/AB_conversation_template_v2.docx"); OutputStream out=getContentResolver().openOutputStream(data.getData())) {
                 byte[] bytes=new byte[8192]; int n; while((n=in.read(bytes))!=-1) out.write(bytes,0,n);
@@ -104,6 +111,16 @@ public class MainActivity extends Activity {
     }
     private final class Bridge {
         @JavascriptInterface public void saveTemplate() { runOnUiThread(() -> MainActivity.this.saveTemplate()); }
+        @JavascriptInterface public void saveAttachment(String encoded,String name) {
+            if(encoded.length()>13_400_000) return;
+            byte[] bytes=Base64.decode(encoded,Base64.DEFAULT);
+            runOnUiThread(() -> {
+                pendingAttachment=bytes;
+                Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/octet-stream");
+                intent.putExtra(Intent.EXTRA_TITLE,name);
+                startActivityForResult(intent,ATTACHMENT_SAVE);
+            });
+        }
         @JavascriptInterface public void parseDocx(String encoded,String name,int id) {
             executor.execute(() -> {
                 try { respond(id,DocxParser.parse(Base64.decode(encoded,Base64.DEFAULT),name).toString(),""); }

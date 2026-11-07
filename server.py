@@ -53,6 +53,7 @@ def parse_share_link(url):
     shared = payload['data'].get('biz_data') or {}
     turns = []
     media_warnings = []
+    attachment_bytes = 0
     for message in shared.get('messages', []):
         role = message.get('role')
         blocks = []
@@ -83,8 +84,22 @@ def parse_share_link(url):
                             continue
                         except (requests.RequestException, ValueError):
                             media_warnings.append(f"图片 {item.get('file_name', '未命名文件')} 未能下载")
-                    blocks.append({'type': 'attachment', 'value': item.get('file_name') or '未命名文件',
-                                   'size': item.get('file_size') or 0, 'url': url})
+                    name = item.get('file_name') or '未命名文件'
+                    attachment = {'type': 'attachment', 'value': name, 'size': item.get('file_size') or 0, 'url': url}
+                    if path.startswith('/file?') and 0 < attachment['size'] <= 10_000_000 and attachment_bytes + attachment['size'] <= 50_000_000:
+                        try:
+                            file_response = requests.get('https://files.deepseeksvc.com/api' + path,
+                                                         params={'ty': 'r'}, headers=LINK_HEADERS, timeout=15)
+                            file_response.raise_for_status()
+                            if len(file_response.content) > 10_000_000 or attachment_bytes + len(file_response.content) > 50_000_000:
+                                raise ValueError('文件过大')
+                            attachment['data'] = base64.b64encode(file_response.content).decode()
+                            attachment_bytes += len(file_response.content)
+                            if len(file_response.content) <= 1_000_000 and name.lower().endswith(('.md', '.txt')):
+                                attachment['preview'] = file_response.content.decode('utf-8', errors='replace')
+                        except (requests.RequestException, ValueError):
+                            media_warnings.append(f'附件 {name} 未能下载')
+                    blocks.append(attachment)
         if role == 'USER':
             turns.append({'question': blocks, 'answer': [], 'warnings': [], 'line': len(turns) + 1})
         elif role == 'ASSISTANT' and turns:

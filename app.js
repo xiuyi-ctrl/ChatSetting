@@ -110,7 +110,7 @@ function renderBlocks(blocks, label, markdown = false, side = '') {
   return blocks.map((block, index) => block.type === 'image'
     ? `<div class="image-wrap"><img src="${block.value}" alt="${label}中的图片" tabindex="0"></div><div class="image-caption">${markdown ? '分享链接图片' : 'Word 文档内嵌图片'} · 点击查看大图</div>`
     : block.type === 'attachment'
-      ? `<div class="attachment"><span class="attachment-icon" aria-hidden="true">DOC</span><span><b>${escapeHTML(block.value)}</b><small>${block.size ? `${Math.ceil(block.size / 1024)} KB · ` : ''}上传文件</small></span><a href="${escapeHTML(block.url)}" target="_blank" rel="noopener noreferrer">在原分享页查看 ↗</a></div>`
+      ? `<div class="attachment"><span class="attachment-icon" aria-hidden="true">DOC</span><span><b>${escapeHTML(block.value)}</b><small>${block.size ? `${Math.ceil(block.size / 1024)} KB · ` : ''}上传文件</small></span>${block.preview !== undefined ? `<button class="attachment-preview" type="button" data-side="${side}" data-index="${index}">查看</button>` : ''}${block.data ? `<button class="attachment-download" type="button" data-side="${side}" data-index="${index}">下载</button>` : ''}<a href="${escapeHTML(block.url)}" target="_blank" rel="noopener noreferrer">原分享页 ↗</a></div>`
     : block.type === 'missing-image'
       ? `<div class="missing-image">这张图片暂时无法从 ChatGPT 分享链接读取。<a href="${escapeHTML(block.value)}" target="_blank" rel="noopener noreferrer">在原分享页查看图片 ↗</a>${window.AndroidBridge ? `<button type="button" class="fill-image" data-side="${side}" data-index="${index}">从手机选择图片补全</button>` : ''}</div>`
     : markdown ? `<div class="markdown">${renderMarkdown(block.value)}</div>`
@@ -177,6 +177,23 @@ function render() {
   document.querySelectorAll('.fill-image').forEach(button => button.addEventListener('click', () => {
     pendingImage = {doc, turn, side: button.dataset.side, index: Number(button.dataset.index)};
     $('imageInput').click();
+  }));
+  document.querySelectorAll('.attachment-preview').forEach(button => button.addEventListener('click', () => {
+    const block = turn[button.dataset.side][Number(button.dataset.index)];
+    $('attachmentTitle').textContent = block.value;
+    $('attachmentContent').textContent = block.preview;
+    $('attachmentDialog').showModal();
+  }));
+  document.querySelectorAll('.attachment-download').forEach(button => button.addEventListener('click', () => {
+    const block = turn[button.dataset.side][Number(button.dataset.index)];
+    if (window.AndroidBridge) { window.AndroidBridge.saveAttachment(block.data, block.value); return; }
+    const bytes = Uint8Array.from(atob(block.data), char => char.charCodeAt(0));
+    const href = URL.createObjectURL(new Blob([bytes], {type: 'application/octet-stream'}));
+    const link = document.createElement('a');
+    link.href = href;
+    link.download = block.value;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(href), 60000);
   }));
   renderList();
 }
@@ -470,6 +487,7 @@ $('cancelDelete').addEventListener('click', () => $('deleteDialog').close('cance
 $('confirmDelete').addEventListener('click', () => $('deleteDialog').close('delete'));
 $('deleteDialog').addEventListener('click', e => { if (e.target === $('deleteDialog')) $('deleteDialog').close('cancel'); });
 $('closeImage').addEventListener('click', () => $('imageDialog').close());
+$('closeAttachment').addEventListener('click', () => $('attachmentDialog').close());
 $('imageDialog').addEventListener('click', e => { if (e.target === $('imageDialog')) $('imageDialog').close(); });
 $('imageDialog').addEventListener('close', () => $('previewImage').removeAttribute('src'));
 $('fileInput').addEventListener('change', e => importFiles(e.target.files));

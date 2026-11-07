@@ -39,6 +39,20 @@ class ParserTests(unittest.TestCase):
                           'url': 'https://chat.deepseek.com/share/abc123'})
         self.assertEqual(result['turns'][0]['answer'][0]['value'], '结论[5](<https://example.com/source>)')
 
+    def test_deepseek_text_attachment_can_be_previewed_and_downloaded(self):
+        payload = {'data': {'biz_code': 0, 'biz_data': {'messages': [
+            {'role': 'USER', 'fragments': [{'type': 'FILE', 'files': [
+                {'file_name': 'notes.md', 'file_size': 5, 'is_image': False,
+                 'signed_path': '/file?file_id=example&state=shared'}]}]},
+            {'role': 'ASSISTANT', 'fragments': [{'type': 'RESPONSE', 'content': '收到'}]}]}}}
+        with patch('server.requests.get') as get:
+            get.return_value.json.return_value = payload
+            get.return_value.content = b'hello'
+            result = parse_share_link('https://chat.deepseek.com/share/abc123')
+        attachment = result['turns'][0]['question'][0]
+        self.assertEqual(attachment['preview'], 'hello')
+        self.assertEqual(attachment['data'], 'aGVsbG8=')
+
     def test_chatgpt_share_pairs_user_and_assistant_messages(self):
         def node(role, content_type, parts):
             return {'message': {'author': {'role': role}, 'content': {'content_type': content_type, 'parts': parts}}}
