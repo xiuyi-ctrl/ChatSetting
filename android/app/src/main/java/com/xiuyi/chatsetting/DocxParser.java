@@ -5,6 +5,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.w3c.dom.*;
 import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.DocumentBuilder;
 import java.io.*;
 import java.util.*;
 import java.util.regex.*;
@@ -107,9 +108,13 @@ final class DocxParser {
         return new JSONObject().put("title",title).put("filename",filename).put("turns",turns).put("warnings",warnings).put("imageCount",imageCount);
     }
     private static Document xml(byte[] bytes) throws Exception {
+        String source=new String(bytes,"UTF-8");
+        if(source.replace("\0","").toUpperCase(Locale.ROOT).contains("<!DOCTYPE")) throw new IllegalArgumentException("Word 文档包含不支持的 XML 声明");
         DocumentBuilderFactory f=DocumentBuilderFactory.newInstance(); f.setNamespaceAware(true);
-        f.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-        return f.newDocumentBuilder().parse(new ByteArrayInputStream(bytes));
+        f.setExpandEntityReferences(false);
+        DocumentBuilder builder=f.newDocumentBuilder();
+        builder.setEntityResolver((publicId,systemId) -> { throw new IllegalArgumentException("Word 文档引用了外部 XML 实体"); });
+        return builder.parse(new ByteArrayInputStream(bytes));
     }
     private static void collect(Node node,List<Part> parts,Map<String,String> images,Map<String,byte[]> files) {
         if(node instanceof Element) {
