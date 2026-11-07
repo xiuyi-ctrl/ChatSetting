@@ -5,6 +5,7 @@ import org.json.*;
 import java.io.*;
 import java.net.*;
 import java.util.regex.*;
+import java.util.*;
 import java.util.function.BiConsumer;
 
 final class ShareParser {
@@ -27,10 +28,22 @@ final class ShareParser {
             if(i%5==0 || i==messages.length()-1) progress.accept(20+75*(i+1)/messages.length(),"正在处理消息 "+(i+1)+" / "+messages.length());
             JSONObject message=messages.optJSONObject(i); if(message==null) continue;
             JSONArray fragments=message.optJSONArray("fragments"), blocks=new JSONArray();
+            Map<String,String> references=new HashMap<>();
+            if(fragments!=null) for(int j=0;j<fragments.length();j++) {
+                JSONObject search=fragments.optJSONObject(j);
+                if(search==null || !search.optString("type").equals("SEARCH")) continue;
+                JSONArray results=search.optJSONArray("results");
+                if(results!=null) for(int k=0;k<results.length();k++) {
+                    JSONObject item=results.optJSONObject(k); if(item==null) continue;
+                    String refUrl=item.optString("url");
+                    if(item.has("cite_index") && (refUrl.startsWith("https://") || refUrl.startsWith("http://")))
+                        references.put(item.optString("cite_index"),refUrl.replace("<","%3C").replace(">","%3E").replace(" ","%20"));
+                }
+            }
             if(fragments!=null) for(int j=0;j<fragments.length();j++) {
                 JSONObject fragment=fragments.optJSONObject(j); if(fragment==null) continue;
                 String type=fragment.optString("type");
-                if((type.equals("REQUEST") || type.equals("RESPONSE")) && !fragment.optString("content").isEmpty()) blocks.put(block("text",fragment.optString("content")));
+                if((type.equals("REQUEST") || type.equals("RESPONSE")) && !fragment.optString("content").isEmpty()) blocks.put(block("text",linkCitations(fragment.optString("content"),references)));
                 else if(type.equals("FILE")) {
                     JSONArray files=fragment.optJSONArray("files");
                     if(files!=null) for(int k=0;k<files.length();k++) {
@@ -44,7 +57,7 @@ final class ShareParser {
                                 blocks.put(block("image","data:"+mime+";base64,"+Base64.encodeToString(bytes,Base64.NO_WRAP))); imageCount++; continue;
                             } catch(Exception ex) { warnings.put("图片 "+name+" 未能下载"); }
                         }
-                        blocks.put(block("text","[附件："+name+"]"));
+                        blocks.put(new JSONObject().put("type","attachment").put("value",name).put("size",file.optLong("file_size")).put("url",url));
                     }
                 }
             }
@@ -124,6 +137,16 @@ final class ShareParser {
         return new JSONObject().put("title",shared.optString("title","ChatGPT 对话")).put("filename","ChatGPT · "+id).put("type","link").put("platform","ChatGPT").put("sourceUrl",url).put("turns",turns).put("warnings",warnings).put("imageCount",imageCount);
     }
     private static JSONObject block(String type,String value) throws Exception { return new JSONObject().put("type",type).put("value",value); }
+    private static String linkCitations(String content,Map<String,String> references) {
+        Matcher matcher=Pattern.compile("\\[citation:(\\d+)\\]").matcher(content);
+        StringBuffer result=new StringBuffer();
+        while(matcher.find()) {
+            String url=references.get(matcher.group(1));
+            matcher.appendReplacement(result,Matcher.quoteReplacement(url==null?matcher.group(0):"["+matcher.group(1)+"](<"+url+">)"));
+        }
+        matcher.appendTail(result);
+        return result.toString();
+    }
     private static String imageMime(byte[] bytes) throws IOException {
         if(bytes.length>8 && (bytes[0]&255)==137 && bytes[1]==80 && bytes[2]==78 && bytes[3]==71) return "image/png";
         if(bytes.length>3 && (bytes[0]&255)==255 && (bytes[1]&255)==216) return "image/jpeg";

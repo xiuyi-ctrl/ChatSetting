@@ -1,6 +1,6 @@
 # 对话拾页
 
-本地运行的对话浏览器。支持上传 `.docx` 文档，或粘贴公开的 ChatGPT / DeepSeek 分享链接。Word 文档按 `A：` / `B：` 标记拆分，支持横线或空段落分隔；分享链接按用户和助手消息配对，并按 Markdown 格式显示回答及 LaTeX 公式。Word 和 DeepSeek 来源保留可获取的图片；ChatGPT 分享消息中的图片若无法公开下载，会在所属轮次显示原分享页入口。
+本地运行的对话浏览器。支持上传 `.docx` 文档，或粘贴公开的 ChatGPT / DeepSeek 分享链接。Word 文档按 `A：` / `B：` 标记拆分，支持横线或空段落分隔；分享链接按用户和助手消息配对，并按 Markdown 格式显示回答及 LaTeX 公式。Word 和 DeepSeek 来源保留可获取的图片；DeepSeek 分享中的搜索引用显示为来源链接，上传文件显示为附件卡片并提供原分享页入口；ChatGPT 分享消息中的图片若无法公开下载，会在所属轮次显示原分享页入口。
 
 推荐使用 [AB_conversation_template_v2.docx](AB_conversation_template_v2.docx)：每轮的 `A：` 和 `B：` 是独立、加粗、16 磅的固定样式段落，正文写在其下。复制整组标记和内容即可增加轮次。解析器会优先识别这种样式，避免把正文里的 A/B 格式示例误认作新轮次。
 

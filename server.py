@@ -8,7 +8,7 @@ import requests
 import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 from xml.etree import ElementTree as ET
 
 
@@ -56,9 +56,18 @@ def parse_share_link(url):
     for message in shared.get('messages', []):
         role = message.get('role')
         blocks = []
+        references = {item.get('cite_index'): quote(item['url'], safe=':/?&=#%+@,;~-._')
+                      for fragment in message.get('fragments', []) if fragment.get('type') == 'SEARCH'
+                      for item in fragment.get('results', [])
+                      if isinstance(item, dict) and isinstance(item.get('cite_index'), int)
+                      and isinstance(item.get('url'), str) and urlparse(item['url']).scheme in ('http', 'https')
+                      and urlparse(item['url']).hostname}
         for fragment in message.get('fragments', []):
             if fragment.get('type') in ('REQUEST', 'RESPONSE') and fragment.get('content'):
-                blocks.append({'type': 'text', 'value': fragment['content']})
+                content = re.sub(r'\[citation:(\d+)\]',
+                                 lambda match: f"[{match[1]}](<{references[int(match[1])]}>)" if int(match[1]) in references else match[0],
+                                 fragment['content'])
+                blocks.append({'type': 'text', 'value': content})
             elif fragment.get('type') == 'FILE':
                 for item in fragment.get('files', []):
                     path = item.get('signed_path', '')
@@ -74,7 +83,8 @@ def parse_share_link(url):
                             continue
                         except (requests.RequestException, ValueError):
                             media_warnings.append(f"图片 {item.get('file_name', '未命名文件')} 未能下载")
-                    blocks.append({'type': 'text', 'value': f"[附件：{item.get('file_name', '未命名文件')}]"})
+                    blocks.append({'type': 'attachment', 'value': item.get('file_name') or '未命名文件',
+                                   'size': item.get('file_size') or 0, 'url': url})
         if role == 'USER':
             turns.append({'question': blocks, 'answer': [], 'warnings': [], 'line': len(turns) + 1})
         elif role == 'ASSISTANT' and turns:

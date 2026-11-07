@@ -23,6 +23,22 @@ def document_with_paragraphs(paragraphs):
 
 
 class ParserTests(unittest.TestCase):
+    def test_deepseek_citations_and_uploaded_files(self):
+        payload = {'data': {'biz_code': 0, 'biz_data': {'messages': [
+            {'role': 'USER', 'fragments': [
+                {'type': 'FILE', 'files': [{'file_name': 'notes.pdf', 'file_size': 2048, 'is_image': False}]},
+                {'type': 'REQUEST', 'content': '请总结'}]},
+            {'role': 'ASSISTANT', 'fragments': [
+                {'type': 'SEARCH', 'results': [{'cite_index': 5, 'url': 'https://example.com/source', 'title': '来源'}]},
+                {'type': 'RESPONSE', 'content': '结论[citation:5]'}]}]}}}
+        with patch('server.requests.get') as get:
+            get.return_value.json.return_value = payload
+            result = parse_share_link('https://chat.deepseek.com/share/abc123')
+        self.assertEqual(result['turns'][0]['question'][0],
+                         {'type': 'attachment', 'value': 'notes.pdf', 'size': 2048,
+                          'url': 'https://chat.deepseek.com/share/abc123'})
+        self.assertEqual(result['turns'][0]['answer'][0]['value'], '结论[5](<https://example.com/source>)')
+
     def test_chatgpt_share_pairs_user_and_assistant_messages(self):
         def node(role, content_type, parts):
             return {'message': {'author': {'role': role}, 'content': {'content_type': content_type, 'parts': parts}}}

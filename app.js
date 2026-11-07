@@ -109,6 +109,8 @@ function renderMarkdown(source) {
 function renderBlocks(blocks, label, markdown = false, side = '') {
   return blocks.map((block, index) => block.type === 'image'
     ? `<div class="image-wrap"><img src="${block.value}" alt="${label}中的图片" tabindex="0"></div><div class="image-caption">${markdown ? '分享链接图片' : 'Word 文档内嵌图片'} · 点击查看大图</div>`
+    : block.type === 'attachment'
+      ? `<div class="attachment"><span class="attachment-icon" aria-hidden="true">DOC</span><span><b>${escapeHTML(block.value)}</b><small>${block.size ? `${Math.ceil(block.size / 1024)} KB · ` : ''}上传文件</small></span><a href="${escapeHTML(block.url)}" target="_blank" rel="noopener noreferrer">在原分享页查看 ↗</a></div>`
     : block.type === 'missing-image'
       ? `<div class="missing-image">这张图片暂时无法从 ChatGPT 分享链接读取。<a href="${escapeHTML(block.value)}" target="_blank" rel="noopener noreferrer">在原分享页查看图片 ↗</a>${window.AndroidBridge ? `<button type="button" class="fill-image" data-side="${side}" data-index="${index}">从手机选择图片补全</button>` : ''}</div>`
     : markdown ? `<div class="markdown">${renderMarkdown(block.value)}</div>`
@@ -123,7 +125,7 @@ function renderList() {
     .filter(({turn}) => (textOf(turn.question) + ' ' + textOf(turn.answer)).toLowerCase().includes(query));
   $('count').textContent = query ? `找到 ${matches.length} 轮` : `共 ${doc.turns.length} 轮`;
   $('turns').innerHTML = matches.length ? matches.map(({turn, index}) => {
-    const summary = textOf(turn.question).slice(0, 27) || '图片提问';
+    const summary = textOf(turn.question).slice(0, 27) || (turn.question.some(b => b.type === 'attachment') ? '附件提问' : '图片提问');
     const hasImage = turn.question.some(b => b.type === 'image' || b.type === 'missing-image') || turn.answer.some(b => b.type === 'image' || b.type === 'missing-image');
     return `<button class="turn ${selected === index ? 'active' : ''}" data-index="${index}"><span class="num">${String(index + 1).padStart(2, '0')}</span><b>${escapeHTML(summary)}</b><small>${turn.warnings.length ? escapeHTML(turn.warnings.join('、')) : '完整问答'}${hasImage ? '<span class="pill">图片</span>' : ''}</small></button>`;
   }).join('') : '<div class="empty">没有找到匹配的轮次</div>';
