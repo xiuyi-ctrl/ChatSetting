@@ -4,6 +4,18 @@ let activeDoc = 0;
 let selected = 0;
 let saveQueue = Promise.resolve();
 
+function setRailCollapsed(collapsed) {
+  document.querySelector('.app').classList.toggle('rail-collapsed', collapsed);
+  $('railToggle').textContent = collapsed ? '›' : '‹';
+  $('railToggle').setAttribute('aria-expanded', String(!collapsed));
+  $('railToggle').setAttribute('aria-label', collapsed ? '展开左侧栏' : '收起左侧栏');
+  $('railToggle').title = collapsed ? '展开左侧栏' : '收起左侧栏';
+  try { localStorage.setItem('railCollapsed', collapsed ? '1' : '0'); } catch (_) {}
+}
+try { setRailCollapsed(localStorage.getItem('railCollapsed') === '1'); }
+catch (_) { setRailCollapsed(false); }
+$('railToggle').addEventListener('click', () => setRailCollapsed(!document.querySelector('.app').classList.contains('rail-collapsed')));
+
 function openStore() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open('dialogue-atlas', 1);
