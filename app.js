@@ -141,7 +141,29 @@ function renderChart(raw) {
   }
 }
 
+function renderPaperFilter(source) {
+  const tagsMatch = source.match(/\{@body const tags=(\[[^\]]*\])\}/);
+  const papersMatch = source.match(/\{@body const papers=\[([\s\S]*?)\]\}/);
+  if (!tagsMatch || !papersMatch) return null;
+  try {
+    const tags = JSON.parse(tagsMatch[1]);
+    const papers = [...papersMatch[1].matchAll(/\{name:"([^"]+)",tags:(\[[^\]]*\]),cost:"([^"]+)",difficulty:"([^"]+)"\}/g)]
+      .map(match => ({name: match[1], tags: JSON.parse(match[2]), cost: match[3], difficulty: match[4]}));
+    if (!Array.isArray(tags) || !papers.length) return null;
+    const caption = source.match(/<caption>([\s\S]*?)<\/caption>/)?.[1] || '';
+    return `<section class="paper-filter" data-papers="${encodeURIComponent(JSON.stringify(papers))}"><div class="paper-filter-head"><strong>论文标签筛选器</strong><span class="paper-filter-count"></span></div><div class="paper-filter-tags">${tags.map(tag => `<button type="button" data-tag="${escapeHTML(tag)}">${escapeHTML(tag)}</button>`).join('')}</div><div class="paper-filter-scroll"><table><thead><tr><th>论文</th><th>算力</th><th>难度</th></tr></thead><tbody></tbody></table></div><p class="paper-filter-caption">${escapeHTML(caption)}</p><button class="paper-filter-clear" type="button">清除筛选</button></section>`;
+  } catch (_) { return null; }
+}
+
 function renderMarkdown(source) {
+  const filterStart = source.indexOf('{@body const tags=');
+  if (filterStart >= 0) {
+    const filterEnd = source.indexOf('\n## ', filterStart);
+    const section = source.slice(filterStart, filterEnd < 0 ? undefined : filterEnd);
+    const filter = renderPaperFilter(section);
+    if (filter) return renderMarkdown(source.slice(0, filterStart)) + filter +
+      (filterEnd < 0 ? '' : renderMarkdown(source.slice(filterEnd)));
+  }
   const tags = /<\/?(?:box|grid|grid-item|row|text|icon|Chart|Cite)\b[^>]*>/gi;
   if (!tags.test(source)) return renderPlainMarkdown(source);
   tags.lastIndex = 0;
@@ -245,6 +267,22 @@ function render() {
     img.tabIndex = 0;
     img.addEventListener('click', () => openImage(img));
     img.addEventListener('keydown', e => { if (e.key === 'Enter') openImage(img); });
+  });
+  document.querySelectorAll('.paper-filter').forEach(filter => {
+    const papers = JSON.parse(decodeURIComponent(filter.dataset.papers));
+    const selected = new Set(filter.querySelector('[data-tag="无训练"]') ? ['无训练'] : []);
+    const update = () => {
+      const matched = papers.filter(paper => [...selected].every(tag => paper.tags.includes(tag)));
+      filter.querySelector('.paper-filter-count').textContent = `${matched.length} 篇匹配`;
+      filter.querySelector('tbody').innerHTML = matched.map(paper => `<tr><td>${escapeHTML(paper.name)}</td><td>${escapeHTML(paper.cost)}</td><td>${escapeHTML(paper.difficulty)}</td></tr>`).join('') || '<tr><td colspan="3">暂无匹配论文</td></tr>';
+      filter.querySelectorAll('[data-tag]').forEach(button => button.setAttribute('aria-pressed', String(selected.has(button.dataset.tag))));
+    };
+    filter.querySelectorAll('[data-tag]').forEach(button => button.addEventListener('click', () => {
+      selected.has(button.dataset.tag) ? selected.delete(button.dataset.tag) : selected.add(button.dataset.tag);
+      update();
+    }));
+    filter.querySelector('.paper-filter-clear').addEventListener('click', () => { selected.clear(); update(); });
+    update();
   });
   document.querySelectorAll('.fill-image').forEach(button => button.addEventListener('click', () => {
     pendingImage = {doc, turn, side: button.dataset.side, index: Number(button.dataset.index)};
