@@ -77,7 +77,7 @@ function escapeHTML(value) {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 }
 
-function renderMarkdown(source) {
+function renderPlainMarkdown(source) {
   const math = [];
   const protectedSource = source.split(/(```[\s\S]*?```)/g).map((part, index) => {
     if (index % 2) return part;
@@ -115,6 +115,66 @@ function renderMarkdown(source) {
       displayMode: item.display, throwOnError: false, trust: false
     }));
   }
+  return html;
+}
+
+function renderChart(raw) {
+  try {
+    const match = raw.match(/^<Chart\s+content=\{(\{[\s\S]*\})\}\s*\/>$/);
+    const chart = JSON.parse(match[1]);
+    if (!Array.isArray(chart.data) || !Array.isArray(chart.series)) throw new Error('invalid chart');
+    const title = chart.meta?.title ? `<strong>${escapeHTML(String(chart.meta.title))}</strong>` : '';
+    const description = chart.meta?.description ? `<small>${escapeHTML(String(chart.meta.description))}</small>` : '';
+    const series = chart.series.filter(item => item && typeof item.dataKey === 'string');
+    const min = Number(chart.yAxisMin) || 0;
+    const max = Number(chart.yAxisMax) || 1;
+    const head = series.map(item => `<th>${escapeHTML(String(item.label || item.dataKey))}</th>`).join('');
+    const rows = chart.data.map(row => `<tr><th>${escapeHTML(String(row[chart.xKey] ?? ''))}</th>${series.map(item => {
+      const value = Number(row[item.dataKey]);
+      if (!Number.isFinite(value)) return '<td>—</td>';
+      const width = Math.max(0, Math.min(100, (value - min) / (max - min || 1) * 100));
+      return `<td>${chart.chartType === 'bar' ? `<span class="component-chart-bar" style="width:${width}%"></span>` : ''}${escapeHTML(String(row[item.dataKey]))}</td>`;
+    }).join('')}</tr>`).join('');
+    return `<div class="component-chart">${title}${description}<div class="component-chart-scroll"><table><thead><tr><th>${escapeHTML(String(chart.xKey || '项目'))}</th>${head}</tr></thead><tbody>${rows}</tbody></table></div></div>`;
+  } catch (_) {
+    return '<div class="component-chart">图表数据暂无法显示</div>';
+  }
+}
+
+function renderMarkdown(source) {
+  const tags = /<\/?(?:box|grid|grid-item|row|text|icon|Chart|Cite)\b[^>]*>/gi;
+  if (!tags.test(source)) return renderPlainMarkdown(source);
+  tags.lastIndex = 0;
+  const icons = {'arrow-down': '↓', image: '▧', waves: '≋', camera: '▣'};
+  const stack = [];
+  let html = '';
+  let offset = 0;
+  for (const match of source.matchAll(tags)) {
+    if (match.index > offset && source.slice(offset, match.index).trim()) html += renderPlainMarkdown(source.slice(offset, match.index));
+    const raw = match[0];
+    const name = raw.match(/^<\/?([\w-]+)/)[1].toLowerCase();
+    if (raw.startsWith('</')) {
+      if (stack[stack.length - 1] === name) { stack.pop(); html += '</div>'; }
+    } else if (name === 'chart') {
+      html += renderChart(raw);
+    } else if (name === 'cite') {
+      // Citation targets in shared content are internal IDs, not public links.
+    } else if (name === 'icon') {
+      const icon = raw.match(/\bname="([\w-]+)"/)?.[1];
+      html += `<span class="component-icon" aria-hidden="true">${icons[icon] || '•'}</span>`;
+    } else {
+      const classes = [`component-${name}`];
+      if (/\b(?:align|justify)="center"/.test(raw)) classes.push('component-center');
+      if (/\bbackground="surface-secondary"/.test(raw)) classes.push('component-muted');
+      if (/\bbackground="rgba\(42,110,190/.test(raw)) classes.push('component-blue');
+      if (name === 'text' && /\bsize="xs"/.test(raw)) classes.push('component-small');
+      html += `<div class="${classes.join(' ')}">`;
+      stack.push(name);
+    }
+    offset = match.index + raw.length;
+  }
+  if (offset < source.length && source.slice(offset).trim()) html += renderPlainMarkdown(source.slice(offset));
+  while (stack.length) { stack.pop(); html += '</div>'; }
   return html;
 }
 

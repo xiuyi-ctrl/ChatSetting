@@ -148,6 +148,8 @@ def parse_chatgpt_payload(url, shared, images=None):
         role = (message.get('author') or {}).get('role')
         if role not in ('user', 'assistant'):
             continue
+        if role == 'assistant' and message.get('end_turn') is False:
+            continue
         content = message.get('content') or {}
         if content.get('content_type') not in ('text', 'multimodal_text'):
             continue
@@ -170,7 +172,11 @@ def parse_chatgpt_payload(url, shared, images=None):
         if role == 'user':
             turns.append({'question': blocks, 'answer': [], 'warnings': [], 'line': len(turns) + 1})
         elif turns:
-            turns[-1]['answer'].extend(blocks)
+            answer = turns[-1]['answer']
+            if len(blocks) == 1 and blocks[0]['type'] == 'text' and len(blocks[0]['value']) > 200 and any(
+                    item['type'] == 'text' and blocks[0]['value'] in item['value'] for item in answer):
+                continue
+            answer.extend(blocks)
     if not turns:
         raise ValueError('链接已读取，但没有识别到用户提问；该分享可能仅包含单条回答')
     for index, turn in enumerate(turns, 1):

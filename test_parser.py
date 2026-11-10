@@ -70,6 +70,32 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(len(result['turns']), 2)
         self.assertEqual([turn['answer'][0]['value'] for turn in result['turns']], ['第一答', '第二答'])
 
+    def test_chatgpt_share_skips_intermediate_answer(self):
+        url = 'https://chatgpt.com/share/6af130a3-5010-83ea-8b36-9a30c2516793'
+        def node(role, text, end_turn=None):
+            return {'message': {'author': {'role': role}, 'end_turn': end_turn,
+                                'content': {'content_type': 'text', 'parts': [text]}}}
+        payload = {'linear_conversation': [
+            node('user', '介绍论文'),
+            node('assistant', '## 一、论文基本信息\n## 二、核心思想', False),
+            node('assistant', '## 一、论文基本信息\n## 二、核心思想\n## 三、整体检测流程', True),
+            node('assistant', '## 四、关键技术细节', True)]}
+        result = parse_chatgpt_payload(url, payload)
+        self.assertEqual([block['value'] for block in result['turns'][0]['answer']],
+                         ['## 一、论文基本信息\n## 二、核心思想\n## 三、整体检测流程', '## 四、关键技术细节'])
+
+    def test_chatgpt_share_skips_repeated_final_segment(self):
+        url = 'https://chatgpt.com/share/6af130a3-5010-83ea-8b36-9a30c2516793'
+        repeated = '## 五、实验结果\n' + '图表数据。' * 50
+        payload = {'linear_conversation': [
+            {'message': {'author': {'role': 'user'}, 'content': {'content_type': 'text', 'parts': ['介绍论文']}}},
+            {'message': {'author': {'role': 'assistant'}, 'end_turn': True,
+                         'content': {'content_type': 'text', 'parts': ['正文。\n' + repeated]}}},
+            {'message': {'author': {'role': 'assistant'}, 'end_turn': True,
+                         'content': {'content_type': 'text', 'parts': [repeated]}}}]}
+        result = parse_chatgpt_payload(url, payload)
+        self.assertEqual(len(result['turns'][0]['answer']), 1)
+
     def test_chatgpt_image_links_to_original_share(self):
         url = 'https://chatgpt.com/share/6aebeb1b-6c50-83ea-a391-40eff520c5da'
         payload = {'title': '含图对话', 'linear_conversation': [

@@ -100,6 +100,7 @@ final class ShareParser {
             JSONObject author=message.optJSONObject("author"), content=message.optJSONObject("content");
             String role=author==null?"":author.optString("role"), type=content==null?"":content.optString("content_type");
             if((!role.equals("user") && !role.equals("assistant")) || (!type.equals("text") && !type.equals("multimodal_text"))) continue;
+            if(role.equals("assistant") && Boolean.FALSE.equals(message.opt("end_turn"))) continue;
             JSONArray parts=content.optJSONArray("parts"), blocks=new JSONArray();
             if(parts!=null) for(int j=0;j<parts.length();j++) {
                 Object part=parts.opt(j);
@@ -131,6 +132,12 @@ final class ShareParser {
             if(role.equals("user")) turns.put(new JSONObject().put("question",blocks).put("answer",new JSONArray()).put("warnings",new JSONArray()).put("line",turns.length()+1));
             else if(turns.length()>0) {
                 JSONArray answer=turns.getJSONObject(turns.length()-1).getJSONArray("answer");
+                if(blocks.length()==1 && blocks.getJSONObject(0).optString("type").equals("text") && blocks.getJSONObject(0).optString("value").length()>200) {
+                    String text=blocks.getJSONObject(0).optString("value");
+                    boolean repeated=false;
+                    for(int j=0;j<answer.length();j++) if(answer.getJSONObject(j).optString("type").equals("text") && answer.getJSONObject(j).optString("value").contains(text)) repeated=true;
+                    if(repeated) continue;
+                }
                 for(int j=0;j<blocks.length();j++) answer.put(blocks.get(j));
             }
         }
